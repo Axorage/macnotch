@@ -9,7 +9,7 @@ struct PomodoroBand: View {
 
     var body: some View {
         HStack(spacing: Space.s) {
-            PhaseGlyph(phase: engine.phase, size: 14, color: active ? Palette.accent(engine.phase) : palette.textSecondary)
+            PhaseGlyph(phase: engine.phase, size: 14, color: engine.phase == .work ? palette.amber : (active ? Palette.accent(engine.phase) : palette.textSecondary))
             Text(engine.phase.title)
                 .font(Typo.tab)
                 .foregroundStyle(palette.textPrimary)

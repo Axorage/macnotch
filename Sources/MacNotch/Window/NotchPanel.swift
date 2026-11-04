@@ -75,7 +75,7 @@ final class NotchPanel: NSPanel {
             let r = self.hostView.interactiveViewRect(size: self.viewModel.expandedSizeForDebug).insetBy(dx: -slop, dy: -slop)
             return self.convertToScreen(self.hostView.convert(r, to: nil)).contains(NSEvent.mouseLocation)
         }
-        viewModel.onStickyChange = { [weak self] on in self?.stickyChanged(on) }
+        viewModel.onDropKey = { [weak self] in self?.dropKey() }
         hostView.refreshTracking()
         let sensor = HoverSensorPanel()
         sensor.onEnter = { [weak self] in MainActor.assumeIsolated { self?.viewModel.sensorEntered() } }
@@ -88,6 +88,7 @@ final class NotchPanel: NSPanel {
         }
         syncMouseMode()
         if CommandLine.arguments.contains("--debug-geometry") { debugDump(screen) }
+        if CommandLine.arguments.contains("--debug-open-note") { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.runOpenNoteDebug() } } }
     }
 
     /// Never let AppKit push the panel below the menu bar: its top must equal screen.frame.maxY.
@@ -102,16 +103,48 @@ final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { wantsKey }
     override var canBecomeMain: Bool { false }
 
-    @MainActor private func stickyChanged(_ on: Bool) {
-        wantsKey = on
-        if on {
-            makeKey()
-        } else if isKeyWindow {
-            // Drop key status without activating anything else.
-            makeFirstResponder(nil)
+    /// The editor asks for keyboard focus (user clicked into it, or opened a note). The panel is non-activating,
+    /// so becoming key does not activate the app or reorder other windows.
+    @MainActor func focusEditor(_ tv: NSTextView, reason: String) {
+        guard viewModel.isExpanded else { return }
+        wantsKey = true
+        activateForTyping()
+        if !isKeyWindow { makeKey() }
+        let ok = firstResponder === tv || makeFirstResponder(tv)
+        Log.notes.notice("focusEditor(\(reason, privacy: .public)) isKey=\(self.isKeyWindow) firstResponder=\(ok) editable=\(tv.isEditable) appActive=\(NSApp.isActive)")
+    }
+
+    /// A non-activating panel can be AppKit-key while WindowServer still routes keystrokes to the frontmost app
+    /// (log evidence: panel isKey=true, appActive=true, yet System Events reports another app frontmost).
+    /// Really activate MacNotch while editing and remember who to give focus back to.
+    private var previousApp: NSRunningApplication?
+    @MainActor private func activateForTyping() {
+        let me = ProcessInfo.processInfo.processIdentifier
+        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != me { previousApp = front }
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            Log.notes.notice("activateForTyping: active=\(NSApp.isActive) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?", privacy: .public) prev=\(self.previousApp?.localizedName ?? "-", privacy: .public)")
+        }
+    }
+
+    @MainActor private func restorePreviousApp() {
+        let prev = previousApp
+        previousApp = nil
+        guard let prev, !prev.isTerminated, NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else { return }
+        prev.activate(options: [])
+    }
+
+    /// The island is collapsing: end editing and release key status without activating anything else.
+    @MainActor private func dropKey() {
+        let wasKey = isKeyWindow
+        wantsKey = false
+        if firstResponder !== contentView { makeFirstResponder(nil) }
+        if wasKey {
             orderOut(nil)
             orderFrontRegardless()
         }
+        restorePreviousApp()
+        Log.notes.notice("dropKey wasKey=\(wasKey) isKey=\(self.isKeyWindow)")
     }
 
     /// The big panel catches mouse events (even over transparent pixels) for its whole frame, which would block
@@ -182,8 +215,7 @@ final class NotchPanel: NSPanel {
                 MainActor.assumeIsolated { if viewModel.isSticky { viewModel.collapse() } }
             } else {
                 MainActor.assumeIsolated {
-                    // Clicks never pin the panel: hovering out still dismisses it. Opening a note (editor)
-                    // makes it sticky via the view model; Esc / outside click still close.
+                    // Clicks never pin the panel: hovering out always dismisses it.
                     if viewModel.layout != .expanded { viewModel.expandNow() }
                 }
             }
@@ -209,11 +241,13 @@ final class NotchPanel: NSPanel {
     }
 
     override func keyDown(with event: NSEvent) {
+        let textFocused = firstResponder is NSText
         let handled = MainActor.assumeIsolated {
             viewModel.handleKey(keyCode: event.keyCode,
                                 command: event.modifierFlags.contains(.command),
-                                textFocused: firstResponder is NSText)
+                                textFocused: textFocused)
         }
+        Log.notes.notice("panel.keyDown code=\(event.keyCode) textFocused=\(textFocused) handled=\(handled)")
         if !handled { super.keyDown(with: event) }
     }
 
@@ -227,11 +261,51 @@ final class NotchPanel: NSPanel {
         return handled || super.performKeyEquivalent(with: event)
     }
 
+    override func becomeKey() {
+        super.becomeKey()
+        Log.notes.notice("panel becomeKey")
+    }
+
     override func resignKey() {
         super.resignKey()
-        MainActor.assumeIsolated {
-            if viewModel.isSticky && wantsKey { viewModel.collapse() }
+        // Something else took key (e.g. the user clicked another window): stop wanting it and save.
+        wantsKey = false
+        MainActor.assumeIsolated { restorePreviousApp() }
+        Log.notes.notice("panel resignKey -> flush edits")
+        MainActor.assumeIsolated { viewModel.appState.notes.flushEditsOnCollapse() }
+    }
+
+    /// Debug harness (`--debug-open-note`): expand, open the first note, focus + type into it, log the state.
+    @MainActor func runOpenNoteDebug() {
+        let vm = viewModel
+        let notes = vm.appState.notes
+        func step(_ delay: Double, _ block: @escaping @MainActor () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { block() } }
         }
+        step(1.5) {
+            Log.notes.notice("debug-open-note: expanding; remembered=\(vm.rememberedNoteID ?? -1) status=\(String(describing: notes.status), privacy: .public) count=\(notes.notes.count)")
+            vm.expandNow()
+        }
+        step(4.5) {
+            if vm.selectedNote == nil, let n = notes.notes.first { Log.notes.notice("debug-open-note: opening \(n.title, privacy: .public)"); vm.openNote(n) }
+            else { Log.notes.notice("debug-open-note: selected already (restored)=\(vm.selectedNote?.id ?? -1)") }
+        }
+        step(8.0) { [weak self] in
+            guard let self else { return }
+            let tv = Self.findTextView(in: self.hostView)
+            Log.notes.notice("debug-open-note: textView=\(tv != nil) editable=\(tv?.isEditable ?? false) selectable=\(tv?.isSelectable ?? false) isKey=\(self.isKeyWindow) firstResponder=\(String(describing: self.firstResponder.map { type(of: $0) }), privacy: .public) mode=\(String(describing: notes.activeSession?.mode), privacy: .public) insertionColor=\(String(describing: tv?.insertionPointColor), privacy: .public)")
+            if let tv, tv.isEditable {
+                self.focusEditor(tv, reason: "debug")
+                tv.insertText("[debug typed] ", replacementRange: tv.selectedRange())
+                Log.notes.notice("debug-open-note: text now=\(tv.string.prefix(60), privacy: .public) firstResponderIsTV=\(self.firstResponder === tv) isKey=\(self.isKeyWindow)")
+            }
+        }
+    }
+
+    private static func findTextView(in v: NSView) -> IslandTextView? {
+        if let t = v as? IslandTextView { return t }
+        for s in v.subviews { if let t = findTextView(in: s) { return t } }
+        return nil
     }
 }
 

@@ -6,8 +6,8 @@ import os
 // MARK: Provider: reading / writing a single note for the inline editor
 
 enum EditProbe {
-    case editable(NoteHTML.Doc, mod: Int, html: String)
-    case rich, tooLong, locked, unavailable
+    case editable(NSAttributedString, mod: Int, html: String, plain: String)
+    case rich(display: String?), tooLong, locked, unavailable
 }
 
 enum SaveOutcome {
@@ -27,10 +27,16 @@ extension NotesProvider {
         let f = out.components(separatedBy: NotesScripting.fieldSep)
         guard f.count >= 4, let attachments = Int(f[0]), let mod = Int(f[1]) else { return .unavailable }
         let html = f[3...].joined(separator: NotesScripting.fieldSep)
-        if attachments > 0 { return .rich }
+        if attachments > 0 {
+            Log.notes.notice("read-only: \(attachments) attachment(s)")
+            return .rich(display: nil)
+        }
         if html.count > NoteHTML.maxEditableLength { return .tooLong }
-        guard let doc = NoteHTML.parse(html: html, plaintext: f[2]) else { return .rich }
-        return .editable(doc, mod: mod, html: html)
+        guard let doc = NoteHTML.makeEditable(html: html, plaintext: f[2]) else {
+            Log.notes.notice("read-only: \(NoteHTML.lastFailure, privacy: .public)")
+            return .rich(display: NoteHTML.readOnlyDisplay(html: html))
+        }
+        return .editable(doc, mod: mod, html: html, plain: f[2])
     }
 
     func currentModification(of note: NoteItem) async -> Int? {
@@ -82,6 +88,7 @@ extension NotesProvider {
     /// The island is collapsing: save whatever is pending.
     func flushEditsOnCollapse() {
         guard let s = activeSession else { return }
+        Log.notes.notice("save: flush (collapse/resignKey) dirty=\(s.hasUnsavedChanges)")
         Task { _ = await s.saveNow() }
     }
 
@@ -205,11 +212,19 @@ final class NoteEditSession: ObservableObject {
     let note: NoteItem
     private unowned let notes: NotesProvider
     private(set) var text = ""
+    /// Initial / reloaded content for the editor (list markers and styling included).
+    private(set) var attributed = NSAttributedString()
+    /// Latest editor content (what the next save serializes).
+    private var current = NSAttributedString()
+    /// True once the user changed something in this session (shows "Revert to Original").
+    @Published private(set) var hasEdited = false
     var selection = NSRange(location: 0, length: 0)
     /// Original body HTML, kept in memory for the session.
     private(set) var preEditHTML = ""
+    /// Text with list markers for the read-only view (nil: fall back to Notes' plain text).
+    private(set) var readOnlyDisplay: String?
 
-    private var doc: NoteHTML.Doc?
+    private var preEditPlain = ""
     private var baseMod = 0
     private var remoteMod = 0
     private var dirty = false
@@ -230,14 +245,22 @@ final class NoteEditSession: ObservableObject {
     func load() async {
         notes.activeSession = self
         mode = .loading
-        switch await notes.probeForEdit(note) {
-        case .editable(let d, let mod, let html):
-            doc = d; baseMod = mod; preEditHTML = html
-            text = d.text; dirty = false; saveState = .idle
-            liveTitle = d.lines.first.flatMap { $0.isEmpty ? nil : $0 } ?? note.title
+        // A restored note can open before the list (needed to resolve the note's URI) has loaded: wait for it.
+        var probe = await notes.probeForEdit(note)
+        var waited = 0
+        while case .unavailable = probe, notes.status == .loading, waited < 100 {
+            try? await Task.sleep(nanoseconds: 100_000_000); waited += 1
+            probe = await notes.probeForEdit(note)
+        }
+        switch probe {
+        case .editable(let d, let mod, let html, let plain):
+            baseMod = mod; preEditHTML = html; preEditPlain = plain
+            attributed = d; current = d
+            text = d.string; dirty = false; saveState = .idle; hasEdited = false
+            liveTitle = NoteHTML.title(of: d) ?? note.title
             reloadToken += 1
             mode = .editable
-        case .rich: mode = .readOnly(.rich)
+        case .rich(let display): readOnlyDisplay = display; mode = .readOnly(.rich)
         case .tooLong: mode = .readOnly(.tooLong)
         case .locked: mode = .readOnly(.locked)
         case .unavailable: mode = .unavailable
@@ -246,11 +269,14 @@ final class NoteEditSession: ObservableObject {
 
     // MARK: editing
 
-    func textChanged(_ new: String) {
-        guard mode == .editable, new != text else { return }
-        text = new
+    /// The editor content changed (text or formatting).
+    func contentChanged(_ new: NSAttributedString) {
+        guard mode == .editable else { return }
+        current = new
+        text = new.string
         dirty = true
-        liveTitle = new.components(separatedBy: "\n").first.flatMap { $0.isEmpty ? nil : $0 } ?? note.title
+        hasEdited = true
+        liveTitle = NoteHTML.title(of: new) ?? note.title
         if saveState == .saved || saveState == .saving { saveState = .idle }
         if saveState == .conflict { return }
         scheduleAutosave()
@@ -270,25 +296,25 @@ final class NoteEditSession: ObservableObject {
     func saveNow() async -> Bool {
         debounce?.cancel(); debounce = nil
         while saving { try? await Task.sleep(nanoseconds: 40_000_000) }
-        guard mode == .editable, let doc else { return true }
+        guard mode == .editable else { return true }
         if saveState == .conflict { return !dirty }
         guard dirty else { return true }
         saving = true
         saveState = .saving
         fade?.cancel()
-        let snapshot = text
-        let html = NoteHTML.render(text: snapshot, prefix: doc.prefix, suffix: doc.suffix)
+        let snapshot = current
+        let html = NoteHTML.serialize(snapshot)
         let outcome = await notes.save(note, expectedMod: baseMod, html: html)
         saving = false
         apply(outcome, snapshot: snapshot)
         return !dirty
     }
 
-    private func apply(_ outcome: SaveOutcome, snapshot: String) {
+    private func apply(_ outcome: SaveOutcome, snapshot: NSAttributedString) {
         switch outcome {
         case .saved(let mod):
             baseMod = mod
-            if text == snapshot { dirty = false } else { scheduleAutosave() }
+            if current === snapshot { dirty = false } else { scheduleAutosave() }
             saveState = .saved
             fade = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -331,6 +357,64 @@ final class NoteEditSession: ObservableObject {
         if dirty { scheduleAutosave() }
     }
 
+    // MARK: revert
+
+    /// Writes the body as it was when editing began (with the same conflict check as any save).
+    func revertToOriginal() {
+        guard mode == .editable, !preEditHTML.isEmpty else { return }
+        Task { await performRevert() }
+    }
+
+    func performRevert() async {
+        debounce?.cancel(); debounce = nil
+        while saving { try? await Task.sleep(nanoseconds: 40_000_000) }
+        guard mode == .editable else { return }
+        saving = true
+        saveState = .saving
+        fade?.cancel()
+        let outcome = await notes.save(note, expectedMod: baseMod, html: preEditHTML)
+        saving = false
+        switch outcome {
+        case .saved(let mod):
+            baseMod = mod
+            if let a = NoteHTML.makeEditable(html: preEditHTML, plaintext: preEditPlain) {
+                attributed = a; current = a; text = a.string
+                liveTitle = NoteHTML.title(of: a) ?? note.title
+                reloadToken += 1
+            }
+            dirty = false; hasEdited = false
+            saveState = .saved
+            fade = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard !Task.isCancelled, let self, self.saveState == .saved else { return }
+                self.saveState = .idle
+            }
+            notes.refreshAfterEdit()
+        default:
+            apply(outcome, snapshot: current)
+        }
+    }
+
+    // MARK: drafts
+
+    /// Unsaved text to keep when the detail goes away without a successful save.
+    func draft() -> NoteDraft? {
+        guard mode == .editable, dirty else { return nil }
+        return NoteDraft(text: text, attributed: current, conflict: saveState == .conflict, caret: selection.location)
+    }
+
+    /// Re-apply text that could not be saved last time. A conflict stays a conflict: the user chooses.
+    func restore(draft d: NoteDraft) {
+        guard mode == .editable else { return }
+        text = d.text
+        attributed = d.attributed; current = d.attributed
+        dirty = true; hasEdited = true
+        liveTitle = NoteHTML.title(of: d.attributed) ?? note.title
+        reloadToken += 1
+        if d.conflict { remoteMod = baseMod &+ 1; saveState = .conflict } else { scheduleAutosave() }
+        Log.notes.notice("draft restored conflict=\(d.conflict)")
+    }
+
     // MARK: Edit in Notes
 
     /// Saves, then opens the note in Notes with the caret on the line being edited. False = stayed (unsaved
@@ -353,8 +437,8 @@ final class NoteEditSession: ObservableObject {
 
     /// Called while the app terminates: no async, so write synchronously.
     func flushSynchronously() {
-        guard mode == .editable, dirty, !saving, saveState != .conflict, let doc else { return }
-        let html = NoteHTML.render(text: text, prefix: doc.prefix, suffix: doc.suffix)
+        guard mode == .editable, dirty, !saving, saveState != .conflict else { return }
+        let html = NoteHTML.serialize(current)
         if case .saved(let mod) = notes.saveBlocking(note, expectedMod: baseMod, html: html) {
             baseMod = mod; dirty = false
         }

@@ -49,7 +49,9 @@ if security find-identity -p codesigning 2>/dev/null | grep -q "\"$IDENTITY\""; 
   echo "Signing with \"$IDENTITY\""
 else
   SIGN=(-s -)
-  echo "warning: no \"$IDENTITY\" identity; ad-hoc signing (TCC grants reset on rebuild). See scripts/make-signing-cert.sh"
+  echo "warning: no \"$IDENTITY\" identity; ad-hoc signing."
+  echo "warning: *** Full Disk Access / Automation grants are tied to this build's cdhash and will NOT carry over."
+  echo "warning: *** Re-grant after every rebuild, or run scripts/make-signing-cert.sh once for a stable identity."
 fi
 codesign --force --deep --options runtime --entitlements "$ENT" "${SIGN[@]}" "$APP"
 echo "Built $APP"

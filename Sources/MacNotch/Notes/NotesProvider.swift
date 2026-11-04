@@ -33,6 +33,7 @@ final class NotesProvider: ObservableObject {
     private var listTask: Task<Void, Never>?
     private var activeObserver: NSObjectProtocol?
     private var launchObserver: NSObjectProtocol?
+    private var deactivateObserver: NSObjectProtocol?
     private var listGen = 0
     private var dirty = false
     private var fdaGranted = false
@@ -67,6 +68,7 @@ final class NotesProvider: ObservableObject {
 
     deinit {
         if let o = activeObserver { NotificationCenter.default.removeObserver(o) }
+        if let o = deactivateObserver { NSWorkspace.shared.notificationCenter.removeObserver(o) }
         if let o = terminateObserver { NotificationCenter.default.removeObserver(o) }
         if let o = launchObserver { NSWorkspace.shared.notificationCenter.removeObserver(o) }
     }
@@ -79,6 +81,15 @@ final class NotesProvider: ObservableObject {
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.appDidBecomeActive() }
+        }
+        // Accessory apps may not get didBecomeActive when the user returns from System Settings,
+        // so also re-check FDA when System Settings goes to the background (event-driven, no polling).
+        deactivateObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didDeactivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard app?.bundleIdentifier == "com.apple.systempreferences" else { return }
+            Task { @MainActor in self?.recheckFullDiskAccess() }
         }
         launchObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
@@ -98,13 +109,7 @@ final class NotesProvider: ObservableObject {
     private func appDidBecomeActive() {
         if case .error = status { reload(); return }
         if status == .needsFullDiskAccess { reload(); return }
-        if source == .appleScript {
-            // Re-check Full Disk Access silently; switch to the database source if it was granted.
-            workQueue.async { [weak self] in
-                guard NotesDatabase.hasFullDiskAccess() else { return }
-                DispatchQueue.main.async { MainActor.assumeIsolated { self?.reload() } }
-            }
-        }
+        recheckFullDiskAccess()
         if status == .needsAutomationAccess || status == .notesNotRunning { refreshIfNeeded() }
     }
 
@@ -210,8 +215,18 @@ final class NotesProvider: ObservableObject {
         }
     }
 
+    /// Silently re-check Full Disk Access; if newly granted, reload (switches to the database source + watcher).
+    func recheckFullDiskAccess() {
+        guard source == .appleScript else { return }
+        workQueue.async { [weak self] in
+            guard NotesDatabase.hasFullDiskAccess() else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.reload() } }
+        }
+    }
+
     /// Called by the UI on expand. No cost when the database source works.
     func refreshIfNeeded() {
+        recheckFullDiskAccess()
         if source == .database {
             if dirty { reload() }
             return

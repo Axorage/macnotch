@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import os
 import Combine
 
 @main
@@ -46,6 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NotesProvider.requestAccessibility()
         }
 
+        if CommandLine.arguments.contains("--debug-fda") {
+            let log = Logger(subsystem: "com.eortizd.macnotch", category: "fda")
+            for r in NotesDatabase.fdaProbes() {
+                log.notice("fda probe \(r.path, privacy: .public) ok=\(r.ok) errno=\(r.errno) (\(String(cString: strerror(r.errno)), privacy: .public))")
+            }
+            log.notice("fda bundle=\(Bundle.main.bundlePath, privacy: .public) hasFDA=\(NotesDatabase.hasFullDiskAccess())")
+        }
         if CommandLine.arguments.contains("--open-settings") { openSettings() }
 
         if CommandLine.arguments.contains("--debug-start-timer") { appState.pomodoro.toggle() }

@@ -169,13 +169,27 @@ enum NotesDatabase {
         schemaLock.lock(); schemaCache.removeAll(); schemaLock.unlock()
     }
 
-    /// Silent Full Disk Access probe: read one byte of the user TCC database. Never prompts.
+    /// Silent Full Disk Access probe. Never prompts. Tries several FDA-protected files; if any can be read,
+    /// FDA is on. A missing file (ENOENT) is inconclusive, only EPERM/EACCES means "denied".
     static func hasFullDiskAccess() -> Bool {
-        let fd = Darwin.open(NSHomeDirectory() + "/Library/Application Support/com.apple.TCC/TCC.db", O_RDONLY)
-        guard fd >= 0 else { return false }
-        defer { Darwin.close(fd) }
-        var b: UInt8 = 0
-        return Darwin.read(fd, &b, 1) == 1
+        fdaProbes().contains { $0.ok }
+    }
+
+    static func fdaProbes() -> [(path: String, ok: Bool, errno: Int32)] {
+        let h = NSHomeDirectory()
+        let paths = [h + "/Library/Application Support/com.apple.TCC/TCC.db",
+                     "/Library/Application Support/com.apple.TCC/TCC.db",
+                     h + "/Library/Safari/Bookmarks.plist",
+                     h + "/Library/Messages/chat.db",
+                     defaultPath]
+        return paths.map { p in
+            let fd = Darwin.open(p, O_RDONLY)
+            if fd < 0 { return (p, false, errno) }
+            defer { Darwin.close(fd) }
+            var b: UInt8 = 0
+            if Darwin.read(fd, &b, 1) == 1 { return (p, true, 0) }
+            return (p, false, errno)
+        }
     }
 
     // MARK: helpers

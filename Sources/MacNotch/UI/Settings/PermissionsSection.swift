@@ -47,10 +47,11 @@ struct PermissionsSection: View {
                     Button("Show MacNotch in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
                     }
+                    Button("Relaunch MacNotch") { Self.relaunch() }
                 }
             }
             if fullDisk != .granted {
-                Text("Click + in Full Disk Access and choose MacNotch.").font(.footnote).foregroundStyle(.secondary)
+                Text("Click + in Full Disk Access and choose this copy of MacNotch, then click Relaunch MacNotch to apply.").font(.footnote).foregroundStyle(.secondary)
             }
         } header: {
             Text("Permissions")
@@ -60,6 +61,13 @@ struct PermissionsSection: View {
         .task { await refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await refresh() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            Task { await refresh() }
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didDeactivateApplicationNotification)) { n in
+            let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            if app?.bundleIdentifier == "com.apple.systempreferences" { Task { await refresh() } }
         }
     }
 
@@ -79,10 +87,21 @@ struct PermissionsSection: View {
         .padding(.vertical, 2)
     }
 
+    /// FDA is read when a process starts, so a running instance often needs a relaunch to pick up a new grant.
+    private static func relaunch() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; /usr/bin/open -n \"$0\"", Bundle.main.bundleURL.path]
+        try? p.run()
+        NSApp.terminate(nil)
+    }
+
     private func refresh() async {
         let ae = await Task.detached(priority: .utility) { NotesProvider.automationStatusSilently() }.value
         automation = ae == true ? .granted : (ae == false ? .notGranted : .notRequested)
         accessibility = AXIsProcessTrusted() ? .granted : .notRequested
-        fullDisk = NotesDatabase.hasFullDiskAccess() ? .granted : .notRequested
+        let fda = await Task.detached(priority: .utility) { NotesDatabase.hasFullDiskAccess() }.value
+        fullDisk = fda ? .granted : .notRequested
+        if fda { appState.notes.recheckFullDiskAccess() }
     }
 }

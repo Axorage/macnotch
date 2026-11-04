@@ -94,13 +94,12 @@ private struct NotesContent: View {
     var body: some View {
         Group { content }
             .onChange(of: notes.status) { _, st in
-                if st != .ok, viewModel.selectedNote != nil { viewModel.closeNote() }
+                if st != .ok, st != .loading, viewModel.selectedNote != nil { viewModel.leaveNote() }
             }
     }
 
-    @ViewBuilder private var content: some View {
-        switch notes.status {
-        case .ok:
+    /// The list with the open note's detail on top.
+    @ViewBuilder private var notesStack: some View {
             ZStack(alignment: .top) {
                 NotesList(notes: notes.notes, viewModel: viewModel)
                     .offset(x: viewModel.selectedNote != nil && !reduceMotion ? -24 : 0)
@@ -110,23 +109,33 @@ private struct NotesContent: View {
                 if let note = viewModel.selectedNote {
                     NoteDetail(note: note, notes: notes, viewModel: viewModel) { viewModel.closeNote() }
                         .id(note.id)
-                        .transition(reduceMotion ? .opacity : .offset(x: 24).combined(with: .opacity))
+                        .transition(viewModel.restoring ? .identity
+                                    : (reduceMotion ? .opacity : .offset(x: 24).combined(with: .opacity)))
                 }
             }
-            .animation(reduceMotion ? Motion.fade : Motion.push, value: viewModel.selectedNote)
+            .animation(viewModel.restoring ? nil : (reduceMotion ? Motion.fade : Motion.push), value: viewModel.selectedNote)
             .onChange(of: notes.notes) { _, list in
-                if let sel = viewModel.selectedNote, !list.contains(where: { $0.id == sel.id }) { viewModel.closeNote() }
+                if let sel = viewModel.selectedNote, !list.isEmpty, !list.contains(where: { $0.id == sel.id }) { viewModel.closeNote() }
             }
-        case .loading:
-            ZStack {
-                if showLoading { ProgressView().controlSize(.small).frame(width: 16, height: 16) }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch notes.status {
+        // One branch for both so a restored note keeps its view identity while the list is still loading.
+        case .ok, .loading:
+            if notes.status == .ok || viewModel.selectedNote != nil {
+                notesStack
+            } else {
+                ZStack {
+                    if showLoading { ProgressView().controlSize(.small).frame(width: 16, height: 16) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .task {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    showLoading = true
+                }
+                .onDisappear { showLoading = false }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .task {
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                showLoading = true
-            }
-            .onDisappear { showLoading = false }
         case .needsAutomationAccess:
             if asked {
                 StateView(symbol: "lock.shield", title: "Notes Access Is Off",
@@ -273,9 +282,19 @@ private struct NoteDetail: View {
         .task {
             axHint = Self.shouldShowAXHint
             await session.load()
+            if let d = viewModel.drafts.removeValue(forKey: note.id) { session.restore(draft: d) }
             if session.mode != .editable { text = await notes.fullBody(for: note) }
         }
-        .onDisappear { Task { await session.saveNow() } }
+        .onDisappear {
+            // Island collapsed or detail left: remember the caret, save, and keep any text that could not be saved.
+            let id = note.id
+            viewModel.rememberedCaret[id] = session.selection.location
+            Task { @MainActor in
+                let saved = await session.saveNow()
+                Log.notes.notice("save: onDisappear saved=\(saved) state=\(String(describing: session.saveState), privacy: .public)")
+                if !saved, let d = session.draft() { viewModel.drafts[id] = d }
+            }
+        }
     }
 
     private static var shouldShowAXHint: Bool {
@@ -296,6 +315,13 @@ private struct NoteDetail: View {
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 0)
             status
+            if session.hasEdited, session.mode == .editable {
+                IconButton(symbol: "arrow.uturn.backward", size: 12, label: "Revert to Original",
+                           hint: "Puts the note back the way it was when you opened it") {
+                    session.revertToOriginal()
+                }
+                .help("Revert to Original")
+            }
             HoverButton(radius: 7, action: {
                 Task { if await session.editInNotes() { viewModel.collapse() } }
             }) {
@@ -353,7 +379,7 @@ private struct NoteDetail: View {
         case .editable:
             NoteTextEditor(session: session, onEscape: {
                 _ = viewModel.handleKey(keyCode: 53, command: false, textFocused: true)
-            })
+            }, autoFocus: viewModel.focusEditorOnOpen, initialCaret: viewModel.rememberedCaret[note.id] ?? 0)
             .accessibilityHint("Edit the note. Changes save automatically.")
         case .readOnly(let reason):
             VStack(alignment: .leading, spacing: Space.xs) {
@@ -368,14 +394,14 @@ private struct NoteDetail: View {
 
     private static func caption(_ r: NoteEditSession.ReadOnlyReason) -> String {
         switch r {
-        case .rich: return "This note has rich content \u{2014} edit it in Notes."
+        case .rich: return "This note has formatting MacNotch can\u{2019}t edit yet \u{2014} edit it in Notes."
         case .tooLong: return "This note is too long to edit here \u{2014} edit it in Notes."
         case .locked: return "This note is locked \u{2014} edit it in Notes."
         }
     }
 
     private var readOnlyText: some View {
-        let full = text ?? note.snippet
+        let full = session.readOnlyDisplay ?? text ?? note.snippet
         let truncated = full.count > Self.limit
         return ScrollView {
             VStack(alignment: .leading, spacing: Space.s) {

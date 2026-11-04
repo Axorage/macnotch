@@ -79,6 +79,7 @@ struct Palette {
     let fillSelected = Color.white.opacity(0.12)
     let track = Color.white.opacity(0.15)
     let warning = Color(red: 1, green: 0.839, blue: 0.039)
+    let amber = Color(red: 1.0, green: 0.749, blue: 0.0)
     var textSecondary: Color { .white.opacity(increased ? 0.85 : 0.70) }
     var textTertiary: Color { .white.opacity(increased ? 0.70 : 0.50) }
     var separator: Color { .white.opacity(increased ? 0.30 : 0.12) }
