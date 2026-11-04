@@ -28,7 +28,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         DebugSettings.installMonitors()
-        FocusTracker.start()
         appState.openSettings = { [weak self] in self?.openSettings() }
         setupStatusItem()
         panel = NotchPanel(appState: appState)
@@ -42,30 +41,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Debug: trigger the Notes Automation prompt without needing UI interaction.
         if CommandLine.arguments.contains("--request-automation") {
             Task { await appState.notes.requestAutomationAccess() }
-        }
-        // Debug: trigger the Accessibility prompt (registers MacNotch in Privacy & Security > Accessibility).
-        if CommandLine.arguments.contains("--request-accessibility") {
-            NotesProvider.requestAccessibility()
-        }
-
-        if CommandLine.arguments.contains("--debug-ax") {
-            Logger(subsystem: "com.eortizd.macnotch", category: "ax").notice("debug-ax trusted=\(AXIsProcessTrusted())")
-        }
-        if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--debug-ax-edit=") }) {
-            NotesAX.debugEdit(uri: String(arg.dropFirst("--debug-ax-edit=".count)))
-        }
-        if CommandLine.arguments.contains("--debug-probe-all") {
-            Task { await NotesDebug.probeAll(legacy: CommandLine.arguments.contains("--debug-probe-legacy")) }
-        }
-        if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--debug-ax-begin=") }) {
-            Task { await NotesDebug.axBegin(arg: String(arg.dropFirst("--debug-ax-begin=".count))) }
-        }
-        if CommandLine.arguments.contains("--debug-fda") {
-            let log = Logger(subsystem: "com.eortizd.macnotch", category: "fda")
-            for r in NotesDatabase.fdaProbes() {
-                log.notice("fda probe \(r.path, privacy: .public) ok=\(r.ok) errno=\(r.errno) (\(String(cString: strerror(r.errno)), privacy: .public))")
-            }
-            log.notice("fda bundle=\(Bundle.main.bundlePath, privacy: .public) hasFDA=\(NotesDatabase.hasFullDiskAccess())")
         }
         if CommandLine.arguments.contains("--open-settings") { openSettings() }
 

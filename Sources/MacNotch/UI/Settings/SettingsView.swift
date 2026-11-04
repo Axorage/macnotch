@@ -7,7 +7,6 @@ struct SettingsView: View {
     var body: some View {
         Form {
             GeneralSection(settings: appState.settings)
-            NotesSection(notes: appState.notes)
             PermissionsSection()
             PomodoroSection(engine: appState.pomodoro)
         }
@@ -57,86 +56,6 @@ private struct GeneralSection: View {
                     Text("\(Int(settings.panelHeight)) pt").monospacedDigit().frame(width: 52, alignment: .trailing)
                 }
             }
-        }
-    }
-}
-
-private struct NotesSection: View {
-    @ObservedObject var notes: NotesProvider
-    @State private var text = ""
-    @State private var useOther = false
-    @State private var debounce: Task<Void, Never>?
-
-    private static let otherTag = "\u{0}other"
-
-    private var options: [String] {
-        var list = notes.availableFolders
-        if !useOther, !list.contains(where: { $0.caseInsensitiveCompare(notes.folderName) == .orderedSame }) {
-            list.insert(notes.folderName, at: 0)
-        }
-        return list
-    }
-
-    private var selection: Binding<String> {
-        Binding(
-            get: { useOther ? Self.otherTag : (options.first { $0.caseInsensitiveCompare(notes.folderName) == .orderedSame } ?? notes.folderName) },
-            set: { new in
-                if new == Self.otherTag { useOther = true; text = notes.folderName }
-                else { useOther = false; notes.folderName = new }
-            })
-    }
-
-    var body: some View {
-        Section("Notes") {
-            if notes.availableFolders.isEmpty && !useOther {
-                // Folder list not available (Notes closed or no access): fall back to typing the name.
-                nameField
-            } else {
-                Picker("Folder", selection: selection) {
-                    ForEach(options, id: \.self) { Text($0).tag($0) }
-                    Divider()
-                    Text("Other\u{2026}").tag(Self.otherTag)
-                }
-                if useOther { nameField }
-            }
-            Text(statusLine).font(.footnote).foregroundStyle(.secondary)
-            if case .folderNotFound = notes.status {
-                Button("Create \u{201C}\(notes.folderName)\u{201D} Folder") { Task { await notes.createFolder() } }
-            }
-        }
-        .onAppear {
-            text = notes.folderName
-            notes.refreshIfNeeded()
-            notes.loadFolders(force: true)
-        }
-        .onChange(of: notes.availableFolders) { _, list in
-            if !list.isEmpty, !useOther, !list.contains(where: { $0.caseInsensitiveCompare(notes.folderName) == .orderedSame }) {
-                useOther = true   // current folder isn't in Notes (yet): keep it editable
-            }
-        }
-    }
-
-    private var nameField: some View {
-        TextField("Folder Name", text: $text)
-            .onChange(of: text) { _, new in
-                debounce?.cancel()
-                debounce = Task {
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    if !Task.isCancelled, !new.isEmpty { notes.folderName = new }
-                }
-            }
-    }
-
-    private var statusLine: String {
-        switch notes.status {
-        case .ok: return "✓ Found · \(notes.notes.count) unlocked notes"
-        case .empty: return "✓ Found · No notes yet"
-        case .folderNotFound: return "⚠ No folder with this name in Notes"
-        case .loading: return "Checking…"
-        case .needsFullDiskAccess: return "Full Disk Access needed to read Notes"
-        case .needsAutomationAccess: return "Notes access is off. Hover the notch to allow it."
-        case .notesNotRunning: return "Open Notes to check this folder"
-        case .error: return "Notes didn’t respond"
         }
     }
 }

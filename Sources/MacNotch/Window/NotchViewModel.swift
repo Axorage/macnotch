@@ -10,15 +10,6 @@ enum IslandTransition { case open, close, wings }
 
 enum Log {
     static let hover = Logger(subsystem: "com.eortizd.macnotch", category: "hover")
-    /// Note-editing diagnostics (focus, key status, saves, dismiss reasons). Low volume, always on.
-    static let notes = Logger(subsystem: "com.eortizd.macnotch", category: "debug-notes")
-}
-
-/// Unsaved text kept in memory when the island collapses before a save succeeded (conflict / failure).
-struct NoteDraft {
-    var text: String; var attributed: NSAttributedString; var conflict: Bool; var caret: Int
-    /// Set for drafts of Accessibility-backed notes: the Notes text the draft was based on.
-    var axBase: String?
 }
 
 @MainActor
@@ -26,34 +17,15 @@ final class NotchViewModel: ObservableObject {
     @Published private(set) var isExpanded = false
     @Published private(set) var liveActive = false
     @Published private(set) var transition: IslandTransition = .wings
-    /// The note whose detail/editor is showing. Never makes the island sticky: hovering out always dismisses.
-    @Published var selectedNote: NoteItem? { didSet { selectedNoteChanged() } }
-    @Published var highlightedRow: Int64?
+    @Published var highlightedRow: String?
     @Published private(set) var pulseID = 0
     @Published private(set) var notchSize: CGSize
     @Published private(set) var hasPhysicalNotch: Bool
     @Published private(set) var expandedBody: CGSize
 
     let appState: AppState
-    /// Pinned open by an explicit request (menu / accessibility). Notes never pin the island.
+    /// Pinned open by an explicit request (menu / accessibility).
     private(set) var isSticky = false
-
-    static let lastNoteKey = "notes.lastSelectedId"
-    /// Last note the user opened (survives collapse and relaunch). Cleared by Back and by changing folder.
-    private(set) var rememberedNoteID: Int64?
-    /// Cached metadata of the remembered note, so reopening shows its detail on the very first frame.
-    private var rememberedItem: NoteItem?
-    /// True while a remembered note is being put back on reopen: the detail appears without list->detail motion.
-    @Published private(set) var restoring = false
-    static let lastItemKey = "notes.lastSelectedItem"
-    /// Caret location per remembered note (memory only).
-    var rememberedCaret: [Int64: Int] = [:]
-    /// Unsaved text of notes whose save did not succeed before the island collapsed.
-    var drafts: [Int64: NoteDraft] = [:]
-    /// True when the detail was opened by a user click (focus the editor); false when restored on reopen
-    /// (hovering must never steal the keyboard).
-    private(set) var focusEditorOnOpen = false
-    private var restoreArmed = false
 
     let openDelay: TimeInterval = Motion.hoverOpenDelay
     let closeDelay: TimeInterval = Motion.hoverCloseDelay
@@ -65,12 +37,13 @@ final class NotchViewModel: ObservableObject {
     private var outsideMonitor: Any?
     private var notesStarted = false
 
-    /// Called when the island collapses: the panel drops key status and the editor focus.
-    var onDropKey: (() -> Void)?
+    /// Called when the island collapses: the panel drops key status.
+    var onDropKey: ((_ restoreFocus: Bool) -> Void)?
     /// True when the pointer is currently inside the (post-change) island rect.
     var isPointerInIsland: () -> Bool = { false }
     private var suppressHover = false
-    /// Sticky because of an explicit request (menu / accessibility), not because an editor is open.
+    private var restoreFocus = true
+    /// Sticky because of an explicit request (menu / accessibility).
     private var pinned = false
 
     init(geometry: NotchGeometry, appState: AppState) {
@@ -81,20 +54,9 @@ final class NotchViewModel: ObservableObject {
         expandedBody = CGSize(width: geometry.expandedSize.width - Metrics.expandedEar * 2,
                               height: geometry.expandedSize.height)
 
-        let saved = UserDefaults.standard.object(forKey: Self.lastNoteKey) as? NSNumber
-        rememberedNoteID = saved?.int64Value
-        if let id = rememberedNoteID, let d = UserDefaults.standard.dictionary(forKey: Self.lastItemKey),
-           let title = d["title"] as? String, let snippet = d["snippet"] as? String,
-           let mod = d["modified"] as? Double, (d["id"] as? NSNumber)?.int64Value == id {
-            rememberedItem = NoteItem(id: id, title: title, snippet: snippet, modified: Date(timeIntervalSince1970: mod))
-        }
-
-        // Changing folder forgets the remembered note.
-        appState.notes.$folderName
-            .dropFirst()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.forgetNote(reason: "folder changed") }
-            .store(in: &cancellables)
+        // Resume-last-note was removed: drop its leftover defaults (harmless if absent).
+        UserDefaults.standard.removeObject(forKey: "notes.lastSelectedId")
+        UserDefaults.standard.removeObject(forKey: "notes.lastSelectedItem")
 
         s.$showTimerWhileCollapsed
             .dropFirst()
@@ -239,41 +201,11 @@ final class NotchViewModel: ObservableObject {
     func expandSticky() { pending?.cancel(); pinned = true; setExpanded(true, sticky: true) }
     func makeSticky() { guard isExpanded, !isSticky else { return }; pending?.cancel(); setSticky(true) }
 
-    private func selectedNoteChanged() {
-        if let n = selectedNote {
-            rememberedNoteID = n.id
-            UserDefaults.standard.set(NSNumber(value: n.id), forKey: Self.lastNoteKey)
-            rememberedItem = n
-            UserDefaults.standard.set(["id": NSNumber(value: n.id), "title": n.title, "snippet": n.snippet,
-                                       "modified": n.modified.timeIntervalSince1970], forKey: Self.lastItemKey)
-            restoreArmed = false
-        }
-    }
-
-    private func forgetNote(reason: String) {
-        Log.notes.notice("forget remembered note (\(reason, privacy: .public))")
-        rememberedNoteID = nil
-        rememberedItem = nil
-        restoreArmed = false
-        UserDefaults.standard.removeObject(forKey: Self.lastNoteKey)
-        UserDefaults.standard.removeObject(forKey: Self.lastItemKey)
-    }
-
-    /// Reopening the island: put the last note's detail up immediately (same frame as the island opening),
-    /// from cached metadata, with no list frame and no list->detail motion. If the note turns out to be gone
-    /// once the list loads, NotesContent falls back to the list.
-    private func restoreRememberedNoteNow() {
-        guard selectedNote == nil, let n = rememberedItem, n.id == rememberedNoteID else { return }
-        Log.notes.notice("restoring note \(n.id) directly")
-        restoring = true
-        focusEditorOnOpen = false
-        selectedNote = n
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.restoring = false }
-    }
-
-    func collapse() {
+    func collapse(restoreFocus: Bool = true) {
         pending?.cancel()
+        self.restoreFocus = restoreFocus
         setExpanded(false, sticky: false)
+        self.restoreFocus = true
         // Don't instantly reopen if the pointer is still sitting over the collapsed island.
         suppressHover = isPointerInIsland()
     }
@@ -281,14 +213,12 @@ final class NotchViewModel: ObservableObject {
     private func setExpanded(_ expanded: Bool, sticky: Bool) {
         pending?.cancel()
         Log.hover.notice("setExpanded \(expanded) sticky=\(sticky)")
-        appState.notes.isViewing = expanded
         if expanded {
             if !notesStarted { notesStarted = true; appState.notes.start() }
             appState.notes.refreshIfNeeded()
         }
         if expanded != isExpanded {
             transition = expanded ? .open : .close
-            if expanded { restoreRememberedNoteNow() }
             isExpanded = expanded
             if expanded {
                 // The pointer may already have left before the panel's tracking area was live: re-check once.
@@ -298,9 +228,8 @@ final class NotchViewModel: ObservableObject {
             }
         }
         if !expanded {
-            Log.notes.notice("dismiss: collapsing (note=\(self.selectedNote?.id ?? -1), keyWindow=\(NSApp.windows.contains { $0 is NotchPanel && $0.isKeyWindow }))")
-            onDropKey?()          // resign first responder, drop key status (edits were flushed via isViewing)
-            selectedNote = nil; highlightedRow = nil; restoreArmed = false
+            onDropKey?(restoreFocus)          // drop key status
+            highlightedRow = nil
         }
         if !expanded || !sticky { pinned = false }
         setSticky(expanded && sticky)
@@ -321,33 +250,14 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: Commands (shared by keyboard, menu, accessibility)
 
-    func openNote(_ n: NoteItem) { focusEditorOnOpen = true; selectedNote = n }
-    /// Leave the detail without forgetting it (transient list/status changes).
-    func leaveNote() { selectedNote = nil }
-    /// Back / Esc / note vanished: leave the detail and forget it.
-    func closeNote() {
-        selectedNote = nil
-        forgetNote(reason: "closed")
-    }
-
-    func openSelectedInNotes() {
-        guard let n = selectedNote else { return }
+    /// Opens the note in Notes (brought to the front) and collapses the island.
+    func openNote(_ n: NoteItem) {
         appState.notes.openInNotes(n)
-        collapse()
+        collapse(restoreFocus: false)   // Notes is now frontmost; don't pull focus away from it
     }
 
     /// Returns true if the key was handled. Only called while the panel is key.
-    func handleKey(keyCode: UInt16, command: Bool, textFocused: Bool) -> Bool {
-        // While the note editor has focus, everything belongs to the text view except Esc (save and go back)
-        // and Command-S (save now). Space, Return, arrows and Command-R must reach the text.
-        if textFocused, let session = appState.notes.activeSession {
-            if command { if keyCode == 1 { Task { await session.saveNow() }; return true }; return false }
-            if keyCode == 53 {
-                Task { if await session.finish() { closeNote() } }
-                return true
-            }
-            return false
-        }
+    func handleKey(keyCode: UInt16, command: Bool) -> Bool {
         let e = appState.pomodoro
         if command {
             switch keyCode {
@@ -359,12 +269,12 @@ final class NotchViewModel: ObservableObject {
         }
         switch keyCode {
         case 53: // Esc
-            if selectedNote != nil { closeNote() } else { collapse() }
+            collapse()
             return true
-        case 49 where !textFocused: e.toggle(); return true
+        case 49: e.toggle(); return true
         case 125, 126: return moveHighlight(down: keyCode == 125)
         case 36, 76:
-            if selectedNote == nil, let id = highlightedRow,
+            if let id = highlightedRow,
                let n = appState.notes.notes.first(where: { $0.id == id }) { openNote(n); return true }
             return false
         default: return false
@@ -372,7 +282,6 @@ final class NotchViewModel: ObservableObject {
     }
 
     private func moveHighlight(down: Bool) -> Bool {
-        guard selectedNote == nil else { return false }
         let notes = appState.notes.notes
         guard !notes.isEmpty else { return false }
         let idx = highlightedRow.flatMap { id in notes.firstIndex { $0.id == id } }

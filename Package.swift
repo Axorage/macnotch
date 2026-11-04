@@ -9,7 +9,6 @@ let package = Package(
             name: "MacNotch",
             path: "Sources/MacNotch",
             linkerSettings: [
-                .linkedLibrary("sqlite3"),
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("ServiceManagement"),

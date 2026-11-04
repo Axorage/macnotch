@@ -35,7 +35,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSAppleEventsUsageDescription</key><string>MacNotch reads the titles and text of unlocked notes in the one Notes folder you choose, so it can show them in the notch. It changes a note only when you edit it in the notch, and sends nothing off your Mac.</string>
+  <key>NSAppleEventsUsageDescription</key><string>MacNotch lists the notes in the one Notes folder you choose and opens the one you click in Notes. It never changes your notes and sends nothing off your Mac.</string>
 </dict>
 </plist>
 PLIST
@@ -50,7 +50,7 @@ if security find-identity -p codesigning 2>/dev/null | grep -q "\"$IDENTITY\""; 
 else
   SIGN=(-s -)
   echo "warning: no \"$IDENTITY\" identity; ad-hoc signing."
-  echo "warning: *** Full Disk Access / Automation grants are tied to this build's cdhash and will NOT carry over."
+  echo "warning: *** Automation grants are tied to this build's cdhash and will NOT carry over."
   echo "warning: *** Re-grant after every rebuild, or run scripts/make-signing-cert.sh once for a stable identity."
 fi
 codesign --force --deep --options runtime --entitlements "$ENT" "${SIGN[@]}" "$APP"

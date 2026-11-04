@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import ApplicationServices
 
 /// Settings › Permissions. Each row shows a live, silently-checked status and one action:
 /// "Request Access" (shows the real system prompt, which is what lists MacNotch in Privacy & Security)
@@ -21,12 +20,10 @@ struct PermissionsSection: View {
     }
 
     @State private var automation: Status = .notRequested
-    @State private var accessibility: Status = .notRequested
-    @State private var fullDisk: Status = .notRequested
 
     var body: some View {
         Section {
-            row("Notes (Automation)", "Needed to read and edit your notes.", automation) {
+            row("Notes (Automation)", "Needed to list the notes in your folder and open one in Notes.", automation) {
                 if automation == .notRequested {
                     Button("Request Access") {
                         Task { await appState.notes.requestAutomationAccess(); await refresh() }
@@ -34,24 +31,6 @@ struct PermissionsSection: View {
                 } else if automation == .notGranted {
                     Button("Open Settings") { NotesProvider.openAutomationSettings() }
                 }
-            }
-            row("Accessibility (jump to line, optional)", "Lets MacNotch place the cursor in the note you open.", accessibility) {
-                if accessibility != .granted {
-                    Button("Request Access") { NotesProvider.requestAccessibility() }
-                }
-            }
-            row("Full Disk Access (instant note updates, optional)",
-                "Lets MacNotch read the Notes database so changes appear immediately.", fullDisk) {
-                if fullDisk != .granted {
-                    Button("Open Settings") { NotesProvider.openFullDiskAccessSettings() }
-                    Button("Show MacNotch in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
-                    }
-                    Button("Relaunch MacNotch") { Self.relaunch() }
-                }
-            }
-            if fullDisk != .granted {
-                Text("Click + in Full Disk Access and choose this copy of MacNotch, then click Relaunch MacNotch to apply.").font(.footnote).foregroundStyle(.secondary)
             }
         } header: {
             Text("Permissions")
@@ -87,21 +66,8 @@ struct PermissionsSection: View {
         .padding(.vertical, 2)
     }
 
-    /// FDA is read when a process starts, so a running instance often needs a relaunch to pick up a new grant.
-    private static func relaunch() {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", "sleep 1; /usr/bin/open -n \"$0\"", Bundle.main.bundleURL.path]
-        try? p.run()
-        NSApp.terminate(nil)
-    }
-
     private func refresh() async {
         let ae = await Task.detached(priority: .utility) { NotesProvider.automationStatusSilently() }.value
         automation = ae == true ? .granted : (ae == false ? .notGranted : .notRequested)
-        accessibility = AXIsProcessTrusted() ? .granted : .notRequested
-        let fda = await Task.detached(priority: .utility) { NotesDatabase.hasFullDiskAccess() }.value
-        fullDisk = fda ? .granted : .notRequested
-        if fda { appState.notes.recheckFullDiskAccess() }
     }
 }

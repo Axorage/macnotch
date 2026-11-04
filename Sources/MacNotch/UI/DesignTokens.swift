@@ -109,14 +109,6 @@ extension EnvironmentValues {
 }
 
 enum Typo {
-    // Note content (editor and read-only), AppKit point sizes. NoteHTML and the SwiftUI read-only text both read these.
-    static let noteBodySize: CGFloat = 12        // was 13
-    static let noteMonoSize: CGFloat = 11.5      // was 13
-    static let noteH1Size: CGFloat = 17          // was 20
-    static let noteH2Size: CGFloat = 15          // was 17
-    static let noteLineSpacing: CGFloat = 1.5    // was 2
-    static let noteChipSymbolSize: CGFloat = 11  // was 12
-    static let noteBody = Font.system(size: noteBodySize)
     static let timeHero = Font.system(size: 40, weight: .semibold).monospacedDigit()
     static let timeCompact = Font.system(size: 13, weight: .semibold).monospacedDigit()
     static let rowTitle = Font.body.weight(.semibold)

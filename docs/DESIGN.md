@@ -51,7 +51,7 @@ Tokens: `xs 4`, `s 8`, `m 12`, `l 16`, `xl 24`.
 ### 2.4 Expanded layout (inline, 680 x 210; no tabs)
 Notes (left) and Pomodoro (right) are always visible together on hover (`design-principles.md › Simplicity`, `› Agency`: nothing hidden behind a tab). Island frame = 680 + 2 x 14 ear; content inset 14 + 24 horizontally.
 ```
-y   0 ─ 34  Band = notchH. Wings only: "Notes" title (left), phase title (right). Centre 190 + 2 x 12 pt stays empty.
+y   0 ─ 34  Band = notchH. Wings only: Notes icon + folder-name menu (left wing, centred), phase title (right). Centre 190 + 2 x 12 pt stays empty.
 y  34 ─ 40  6 pt gap
 y  40 ─ 194 Panes (154 pt): Notes (flexible, ~336) | 24 pt gap, no divider | Pomodoro (272)
 y 194 ─ 210 16 pt bottom padding
@@ -97,7 +97,7 @@ SF Pro via system styles. macOS has no Dynamic Type (`typography.md › Desktop 
 |---|---|---|---|
 | `timeHero` | `.system(size: 40, weight: .semibold).monospacedDigit()` | 40 / Semibold | expanded timer |
 | `timeCompact` | `.system(size: 13, weight: .semibold).monospacedDigit()` | 13 / Semibold | live-activity time |
-| `rowTitle` | `.body.weight(.semibold)` | 13 / Semibold | note title, detail title |
+| `rowTitle` | `.body.weight(.semibold)` | 13 / Semibold | note title |
 | `body` | `.body` | 13 / Regular, line spacing 2 | note body |
 | `snippet` | `.subheadline` | 11 / Regular | snippet, empty-state body |
 | `tab` | `.subheadline.weight(.semibold)` | 11 / Semibold | band titles, phase label, Next button |
@@ -109,7 +109,8 @@ Timer format: system countdown format (`m:ss` under 10 min), monospaced digits, 
 ### 4.3 SF Symbols (all `.semibold`, scale medium; weights matched to adjacent text per `sf-symbols.md › Weights and scales`)
 | Purpose | Symbol | Size |
 |---|---|---|
-| Notes title | `note.text` | 13 |
+| Notes title | `note.text` | 14 |
+| Folder menu chevron | `chevron.down` | 8 |
 | Start | `play.fill` | 16 |
 | Pause | `pause.fill` | 16 |
 | Reset | `arrow.counterclockwise` | 13 |
@@ -117,10 +118,6 @@ Timer format: system countdown format (`m:ss` under 10 min), monospaced digits, 
 | Work phase | `timer` | 14 live / 16 expanded |
 | Short Break | `cup.and.saucer.fill` | same |
 | Long Break | `moon.zzz.fill` | same |
-| Back from note | `chevron.left` | 11 |
-| Row disclosure | `chevron.right`, `textTertiary` | 10 |
-| Edit in Notes | `square.and.pencil` | 11 |
-| Folder pull-down chevron | `chevron.down` | 8 |
 | Empty folder | `tray` | 24, `textTertiary` |
 | Folder missing | `folder.badge.questionmark` | 24, `warning` |
 | Permission needed | `lock.shield` | 24, `textSecondary` |
@@ -158,7 +155,7 @@ Indistinguishable from the bare notch.
 ### 5.3 Expanded: inline Notes (left) + Pomodoro (right), 680 x 210
 ```
 ┌ ear 14 ─────────────────────────────────────────────────────────────────────────────────────┐
-│  ▤ Notes  MacNotch ⌄      ↗ ░░░░░░░░░░░░ notch 190 ░░░░░░░░░░░░   🍅 Focus                    │ 34 band
+│     ▤ MacNotch ⌄    ░░░░░░░░░░░░ notch 190 ░░░░░░░░░░░░   🍅 Focus                    │ 34 band
 │                                                                                              │  6
 │  ┌ Groceries for Friday ────────── 2 hr ago ┐         ╭────────╮   ○ ○ ○ ○                   │
 │  │ Oat milk, eggs, the good coffee…         │         │ 24:59  │   Session 1 of 4             │
@@ -169,34 +166,9 @@ Indistinguishable from the bare notch.
 │                                                                                              │ 16
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
-- Notes list: up to 50 rows, `ScrollView` + `LazyVStack`, newest first. Row 38 pt, radius 8: title (`rowTitle`) and relative date (`meta`, tertiary) on the first line, snippet (`snippet`, secondary) on the second, tail-truncated. Hover `fillHover`; keyboard-highlighted `fillSelected`. A soft bottom fade appears only when more than 4 rows exist. `lists-and-tables.md › Best practices` (succinct text, title opens detail). The "Open Notes" icon sits in the band wing.
+- Notes list: every unlocked note in the chosen folder (capped at 500), `ScrollView` + `LazyVStack`, newest first. Row 38 pt, radius 8: title (`rowTitle`) and relative date (`meta`, tertiary) on the first line, snippet (`snippet`, secondary) on the second, tail-truncated. Hover `fillHover`; keyboard-highlighted `fillSelected`. A soft bottom fade appears only when more than 4 rows exist. **Clicking a row (or Return on the highlighted row) opens that note in the Notes app and brings Notes to the front on it** (`show note id`, `activate`), then the island collapses. There is no in-notch note view and no editing; the list is read-only.
+- Band: the Notes wing shows the Notes icon (`note.text`, secondary) followed by the current folder name (`tab`) and a small `chevron.down`, centred in the wing and laid out like the Pomodoro title (same font, icon-label spacing). The name is the folder selector: a borderless `Menu` with an inline `Picker` (checkmark on the current folder), folders loaded lazily on hover via AppleScript (`name of every folder`, Recently Deleted dropped, cached 30 s, only while Notes runs), subtle hover fill. Choosing a folder persists it and reloads. Accessibility label "Notes folder: <name>". No other buttons.
 - Pomodoro pane: see 5.5.
-
-### 5.4 Note detail (inline, inside the Notes pane; editable)
-```
-│  ▤ Notes                                 ░░ notch ░░    🍅 Focus
-│  ‹  Groceries for Friday      Saved   [✎ Edit in Notes]
-│  Oat milk▌
-│  Eggs                                  (editor scrolls)  (Pomodoro pane unchanged)
-```
-- Selecting a row slides the detail in from the right (24 pt + fade, 0.22 s) while the list moves 24 pt left and fades; back reverses. The Pomodoro pane never moves. Reduce Motion: crossfade.
-- Header: `chevron.left` back (label "Back to Notes"), live title (first line of the text), save status, and **Edit in Notes** (`square.and.pencil` + label, min 28 pt hit target). The band no longer shows "Open in Notes" in detail.
-- Body is a rich-text editor (`NSTextView`, `isRichText`: system 12 (`Typo.noteBodySize`), white on black, white insertion point, no smart quotes/dashes, no spell squiggles, undo on, no font panel, no graphics). Titles/headings show at 17/15 pt semibold, code in monospace 11.5 pt, line spacing 1.5 pt, attachment chips 11 pt (all tokens in `Typo` in `UI/DesignTokens.swift`; the read-only text uses the same body size; saved HTML sizes 24/18/13 px are unchanged), links light blue underlined. It does not take focus on open (Space still toggles the timer while reading); clicking into it makes the panel key and the island sticky, so it cannot close on mouse-leave while editing. Display colors never reach Notes: default text color and font are never written.
-- **Focus while editing (Notes-backed mode):** AppleScript `show` brings Notes frontmost, so every `show` is followed immediately by putting the previously frontmost app back (read live via the Accessibility system-wide focused app, restored with `AXFrontmost`; `NSRunningApplication.activate` is cooperative on macOS 14+ and is ignored when MacNotch is not active) and re-hiding Notes if it was hidden. `show` runs once at begin and again only when Notes has navigated to another note. Notes and MacNotch never count as the "previous app" (`FocusTracker`). Collapsing returns focus to the previous app; clicking another app just takes focus (resignKey saves, no re-activation). Notes is launched with `activates = false, hides = true, addsToRecentItems = false`. Log category `ax-edit` records the frontmost app at each step.
-- **HTML editing only when provably lossless:** unlocked, no attachments, at most 60,000 characters, and the body HTML uses only: `div`/`p`, a trailing `br`, `b`/`strong`, `i`/`em`, `u`, `strike`/`s`, `tt`, `h1`–`h3`, `a href`, `font face` (system / Courier names Notes emits), `span style` limited to `font-size` 24/18/13 px (Title / Heading / body), `font-weight`, `font-style`, `text-decoration`, and plain `ul`/`ol` > `li` (no class). The decoded text must equal Notes' `plaintext`, and a round trip (parse, serialize, parse) must reproduce the same text and formatting. **Not HTML-safe** (edited through Notes instead, see *Notes-backed editing* below): attachments, `img`/`object`/`table`, checklists and other list classes (`Apple-dash-list`, …), nested lists, `blockquote`/`pre`/`code`, colors, soft line breaks, any unknown tag or attribute. Too long (read-only): `This note is too long to edit here — edit it in Notes.`; locked (always read-only): `This note is locked — edit it in Notes.`
-- **Formatting:** ⌘B bold, ⌘I italic, ⌘U underline, ⇧⌘X strikethrough (on the selection, or for the next typed text; ⌘B on a title/heading turns it back into body text). Bullet and numbered lists continue on Return, an empty item (or Backspace at the start of an item) ends the list; markers are display-only and never saved as text. Return after a title starts body text. Paste keeps only bold/italic/underline/strike/monospace/links (no foreign fonts, colors or images); ⌥⇧⌘V pastes plain text; drops accept plain text only. Saved as Notes-style HTML: `<div>` per paragraph (`<div><br></div>` when empty), `<b>`, `<i>`, `<u>`, `<strike>`, `<tt>`, `<a href>`, titles/headings as Notes writes them (`<b><font face=".AppleSystemUIFontBold"><span style="font-size: 24px">` / 18 px), `<ul><li>` / `<ol><li>`. Text is escaped; runs of spaces are written as `&nbsp;`.
-- **Keys while the text view has focus:** Esc (save, then back), ⌘S (save now) and the formatting shortcuts above. Space, Return, arrows, ⌘R, ⌘→ etc. go to the text. Standard ⌘X/C/V/A/Z/⇧⌘Z are handled by the editor (the panel has no Edit menu).
-- **Saving:** autosave 1.5 s after typing stops, on Esc/back, on island collapse and at app quit. Status text in the header (`meta`): `Saving…`, then `Saved` (fades after 1.5 s), or `Not saved` (warning colour, never colour alone). The save writes the whole `body` as `<div>` lines (`&`, `<`, `>` escaped; empty line `<div><br></div>`; first line keeps its original wrapper) and then refreshes the list.
-- **Conflict:** the note's modification date is captured when editing begins and re-checked inside the same script that writes. If it changed, nothing is written and an inline notice shows `Changed in Notes` with **Reload** (discard local text, load Notes' version) and **Keep Editing** (keep local text; the next save overwrites the newer version). Failed saves show `Couldn’t save. Your changes are still here.` with **Try Again**. Leaving is blocked while a conflict or error is unresolved.
-- **Revert to Original:** once something was edited in this session, an `arrow.uturn.backward` button (label "Revert to Original") appears in the header. It writes back the body HTML exactly as it was when the note was opened (kept in memory), with the same conflict check, then reloads the editor.
-- **Notes-backed editing (Accessibility).** A note the HTML codec rejects for a content reason (attachments, tables, checklists, nested lists, unknown markup) but that is not locked and not too long is edited *inside Notes' own text view* through Accessibility, so images and formatting are never rewritten. Requires `AXIsProcessTrusted()`; without it the note stays read-only with the caption `Notes with images or rich formatting are edited through Notes, which needs Accessibility access.` and the button **Allow Accessibility to Edit** (the only place the prompt is requested; MacNotch then waits up to 2 minutes for the grant and opens the editor by itself).
-  - *Baseline and display.* Opening the note runs `show` (no `activate`) and reads the AXValue of Notes' text area (attachments are U+FFFC). The note is accepted only if that text equals the note's `plaintext` (whitespace and U+FFFC insensitive) and Notes' `selection` is this note, and `AXSelectedText` is settable; otherwise read-only (`MacNotch couldn’t reach this note’s editor in Notes — edit it in Notes.`). The editor text is built FROM the AX string, so offsets are Notes' offsets. Styling (title / headings / bold…) is borrowed from the HTML only when the HTML decodes to exactly that text (image tags counted as U+FFFC); otherwise plain text. Each U+FFFC is a non-editable `photo` chip (SF Symbol, secondary color): edits that intersect a chip, or paste containing U+FFFC, are refused with a beep. ⌘B/⌘I/⌘U/⇧⌘X beep and rich paste is turned into plain text. A tertiary caption under the editor says `Text edits only — formatting and images are preserved in Notes.`
-  - *Saving.* Debounce 3 s (1.5 s for HTML notes), plus Esc / collapse / quit. The editor text is diffed against the baseline (`NotesTextDiff`): both texts are split at U+FFFC (counts must match, else refuse), each piece is diffed with Myers on composed character sequences, edits are applied from the end of the note to the start. Per edit: set `AXSelectedTextRange`, read it back, check the selected text is what we expect to replace, set `AXSelectedText`, and re-read `AXValue` until it equals the expected intermediate string. A mismatch stops the save, rolls back to the baseline with the inverse diff, and shows `Couldn’t save — open in Notes to check. Your changes are still here.` After the last edit the AX text must equal the target, then AppleScript `count attachments` must be unchanged and `plaintext` must match. Only attribute writes are used, never keystrokes.
-  - *Conflict.* Before writing, the AX text is re-read; if it differs from the baseline (our last write or the load) nothing is written and the usual `Changed in Notes` notice appears. **Reload** re-reads Notes; **Keep Editing** re-bases on Notes' current text so the next save overwrites it with ours. A restored draft based on older Notes text starts as a conflict.
-  - *Focus.* Notes may come forward when it shows the note; afterwards the previously frontmost app is re-activated, Notes is hidden (only if it was hidden or inactive before) and the editor regains key status. Selecting the note changes which note Notes itself has selected.
-  - *Revert to Original* applies the inverse diff (current Notes text back to the opening text) through the same path. All AX calls run on one background queue with 1 s messaging timeouts and bounded loops.
-- **Edit in Notes:** saves pending text, shows the note by id and activates Notes, then (if Accessibility is allowed) sets the insertion point to the start of the line the caret was on (UTF-16 offset in the same text, title is line 1), retrying for about 1.2 s and only if Notes' text begins with our first line. Read-only notes just open. If Accessibility is off, the note opens without the cursor jump and, because Notes then takes focus and the island closes, the next detail view shows once: `Allow Accessibility to jump to the line` with **Open Settings** (the only place the system prompt is requested; also opens Privacy › Accessibility) and **Not Now**.
-- Folder pull-down (band, list view only): `Notes  MacNotch ⌄` — a `Menu` with an inline `Picker` (checkmark on the current folder), populated lazily on first hover (cached 30 s; database when Full Disk Access is on, else AppleScript only while Notes runs). Choosing a folder saves the setting and reloads.
 
 ### 5.5 Pomodoro pane (right)
 ```
@@ -222,10 +194,8 @@ Indistinguishable from the bare notch.
 |---|---|---|---|---|
 | Permission, before asking | `lock.shield` | Allow MacNotch to Read Notes | MacNotch shows notes from one folder in the notch. macOS will ask for your permission next. | **Continue** (single button, opens the system alert) |
 | Automation denied | `lock.shield` | Notes Access Is Off | Turn on MacNotch under Privacy & Security › Automation to see your notes. | **Open System Settings** |
-| Full Disk Access needed (only if the data layer reads the Notes database; see 9) | `lock.shield` | Full Disk Access Needed | MacNotch needs Full Disk Access to read your notes quickly. Turn it on, then reopen MacNotch. | **Open System Settings**, **Quit MacNotch** |
-| Folder missing | `folder.badge.questionmark` | No “MacNotch” Folder in Notes | Create a folder with this name in Notes, or choose another name in Settings. | **Create “MacNotch” Folder**, **Open Settings…** |
+| Folder missing | `folder.badge.questionmark` | No “MacNotch” Folder in Notes | Create it here, or choose another folder from the menu above. | **Create “MacNotch” Folder** |
 | No notes | `tray` | No Notes Yet | Add a note to the “MacNotch” folder in Notes and it will appear here. | **Open Notes** |
-| All locked | `tray` | Only Locked Notes Here | Locked notes stay private and are not shown. | **Open Notes** |
 | Loading (shown only after 300 ms) | none | none | small `ProgressView` (16 pt), centered | none |
 | Notes not responding (5 s timeout) | `exclamationmark.triangle.fill` | Notes Didn’t Respond | Make sure Notes is not showing a dialog, then try again. | **Try Again** |
 
@@ -242,7 +212,6 @@ All motion is SwiftUI springs on shape/opacity/offset (Core Animation backed). N
 | Content in (on open) | Starts when the shape is ~60% there: `.easeOut(0.2)` opacity 0→1, scale 0.96→1, delay 0.08 s |
 | Content out (on close) | `.easeIn(0.1)` opacity →0 first, before the shape shrinks |
 | Content entrance (on expand) | Band, Notes pane, Pomodoro pane each fade in and slide up 6 pt, `.easeOut(0.28)`, 0.08 s base delay + 0.04 s stagger. Reduce Motion: opacity only. |
-| List ↔ detail | Horizontal push 24 pt + fade, `.easeOut(0.22)` inside the Notes pane; back reverses. |
 | Button press | Spring scale 0.96 (`response 0.25, damping 0.7`); none under Reduce Motion. |
 | Phase change (also via Next) | Ring view re-identified per phase: 0.3 s opacity crossfade, new accent, ring reset to 0. Phase title crossfades. |
 | Idle duration change | `.numericText(countsDown: true)`, `.snappy(0.3)`. |
@@ -258,7 +227,6 @@ All motion is SwiftUI springs on shape/opacity/offset (Core Animation backed). N
 **Reduce Motion** (`accessibilityReduceMotion`) (`accessibility.md › Cognitive`: replace transitions with fades, tighten springs, avoid scaling):
 - Open/close become a **crossfade** between the collapsed layer and the fully-sized expanded layer, `.easeInOut(0.15)`. No size spring, no scale.
 - Phase pulse: no scaling or bounce; the glyph swaps with a 0.15 s crossfade and the time changes to the next phase value. The sound (if enabled) is the cue.
-- List ↔ detail: crossfade, no push.
 
 **Idle budget.** Collapsed and idle: 0 timers, 0 observers beyond a mouse-move tracking area on the hover rect (`NSTrackingArea`, not global monitors), 0 layers animating. Notes are fetched on expand (async, cached 30 s), never polled. When a timer runs: one `Timer` firing each second aligned to the second boundary, `tolerance = 0.1`, computing remaining time from an end `Date` (survives sleep). Cancel it on pause or reset.
 
@@ -274,11 +242,11 @@ All motion is SwiftUI springs on shape/opacity/offset (Core Animation backed). N
 **Keyboard** (active only when the panel is key, i.e. in sticky mode; hover alone cannot receive keys without global monitoring and extra permissions, which we avoid)
 | Key | Action |
 |---|---|
-| Space | Start/Pause timer (unless the note text view has focus) |
-| Esc | Back from note detail; otherwise close the island |
+| Space | Start/Pause timer |
+| Esc | Close the island |
 | ⌘R | Reset timer |
 | ⌘→ | Skip phase |
-| ↑ ↓ / Return | Move through / open note rows |
+| ↑ ↓ / Return | Move through note rows / open the highlighted note in Notes |
 | Tab | Standard focus order, with system focus rings |
 
 Do not override system shortcuts (`accessibility.md › Speech`).
@@ -297,19 +265,14 @@ Do not override system shortcuts (`accessibility.md › Speech`).
 **Labels and traits** (every icon-only control)
 | Control | `accessibilityLabel` | Notes |
 |---|---|---|
-| Open Notes (band icon) | "Open Notes" | |
 | Start/Pause | "Start Timer" / "Pause Timer" | value: "Focus, 24 minutes 59 seconds remaining" |
 | Reset | "Reset Timer" | hint "Returns to the start of this phase" |
 | Next | "Skip to Short Break" (dynamic) | visible text "Next: Short Break"; hint "Ends this phase and moves to the next one" |
-| Back (in detail) | "Back to Notes" | |
-| Edit in Notes | "Edit in Notes" | hint "Opens this note in the Notes app at the line you are editing" |
-| Folder pull-down | "Folder: MacNotch" | hint "Choose which Notes folder to show" |
-| Note editor | "Note text" | hint "Edit the note. Changes save automatically." |
-| Note row | "\(title). \(snippet)" | hint "Shows the full note"; trait `isButton` |
+| Note row | "\(title). \(snippet). \(date)" | hint "Opens the note in Notes"; trait `isButton` |
 | Collapsed live wings (single element) | "Focus timer, 24 minutes 59 seconds remaining, running" | hint "Opens MacNotch"; custom action "Pause Timer" |
 | Session dots | one element: "Session 2 of 4" | hide the dots individually |
 
-**VoiceOver order** (declare with `accessibilitySortPriority`; container is `accessibilityElement(children: .contain)` labelled "MacNotch"): Notes (visual left) then Pomodoro (visual right): Notes title → Folder menu → Open Notes → rows, or back + Edit in Notes + body → Pomodoro title → time → Start/Pause → Reset → Next → sessions. Hover cannot be performed with VoiceOver, so the collapsed element's default action expands the island in sticky mode, and the menu bar extra has "Show Panel". Do not announce each second. Post `AccessibilityNotification.Announcement` only on phase change ("Focus complete. Short Break is ready.").
+**VoiceOver order** (declare with `accessibilitySortPriority`; container is `accessibilityElement(children: .contain)` labelled "MacNotch"): Notes (visual left) then Pomodoro (visual right): Notes title → rows → Pomodoro title → time → Start/Pause → Reset → Next → sessions. Hover cannot be performed with VoiceOver, so the collapsed element's default action expands the island in sticky mode, and the menu bar extra has "Show Panel". Do not announce each second. Post `AccessibilityNotification.Announcement` only on phase change ("Focus complete. Short Break is ready.").
 
 **Other.** Colors and contrast per section 3. Controls at least 28 pt. Keyboard-only use is fully supported once the panel is key (section 7). The pulse is redundant with sound, text, and the changed time (`feedback.md › Best practices`: more than one channel). Optional trackpad haptic: `NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)` on phase completion.
 
@@ -318,16 +281,14 @@ Do not override system shortcuts (`accessibility.md › Speech`).
 Request nothing at launch (`privacy.md › Requesting permission`: ask when the feature is used). MacNotch with no Notes access works fully as a Pomodoro timer.
 
 1. **Automation for Notes (required).** The first time the island expands, show the "Allow MacNotch to Read Notes" pre-alert state (5.6). It has exactly one button, "Continue", which triggers the system alert by sending a harmless Apple Event (`AEDeterminePermissionToAutomateTarget` with `askUserIfNeeded: true`). No Cancel button and no "Allow"-style wording in our button (`privacy.md › Pre-alert screens, windows, or views`). If the user denies, show "Notes Access Is Off" with a button to `x-apple.systempreferences:com.apple.preference.security?Privacy_Automation`. Re-check status each time the island expands (cheap) so granting in System Settings takes effect without a relaunch.
-2. **Full Disk Access (avoid).** Recommended v1 data path is Apple Events (`tell application "Notes"`), which needs only Automation and handles locked notes (`password protected` property) without parsing the database. Request Full Disk Access **only** if engineering chooses to read the Notes SQLite store for speed; in that case show the FDA state (5.6) when the first read fails with a permission error. It opens `…?Privacy_AllFiles` and tells the user to reopen the app because macOS applies it only after relaunch. Asking for FDA when Automation suffices breaks "request only the data you need" (`privacy.md › Best practices`).
-3. **Scope.** Read only: the configured folder, note id, title, plain-text body, modification date, and the password-protected flag. Never read locked-note bodies. Nothing is written except the explicit "Create Folder" action, the "Open in Notes" (show) action, and the body of an unlocked note whose formatting MacNotch can save losslessly the user edited in the inline editor (see 5.4 for the safeguards: conflict check, no attachments/rich content, locked re-check). No analytics, no network.
-5. **Accessibility (optional: "Edit in Notes" cursor placement and editing notes with images / rich formatting).** Never requested at launch or on first use of the button. When the user clicks **Open Settings** on the in-notch hint, call `AXIsProcessTrustedWithOptions` with the prompt and open `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility`. Purpose, stated plainly: MacNotch moves the text cursor in the Notes window to the line you were editing; it does not read anything else. For notes with images, tables, checklists or other rich content, MacNotch also reads the note's text area and applies your text edits there as attribute writes (never keystrokes), only after you click **Allow Accessibility to Edit**; without it those notes stay read-only and everything else works.
+3. **Scope.** Read only: the configured folder, note id, title, plain-text body (for the one-line snippet), modification date, and the password-protected flag. Never read locked-note bodies or titles. MacNotch never edits a note. Nothing is written except the explicit "Create Folder" action; the "Open in Notes" action only shows the clicked note. No analytics, no network. MacNotch needs no Full Disk Access and no Accessibility permission.
 4. **Info.plist.** `LSUIElement = YES` (no Dock icon). Use the hardened runtime with the Apple Events entitlement `com.apple.security.automation.apple-events`; if sandboxed, also `com.apple.security.temporary-exception.apple-events` for `com.apple.Notes`. Sign with Developer ID (`privacy.md › Desktop (macOS)`).
 
 **Exact `NSAppleEventsUsageDescription`:**
 ```
-MacNotch reads the titles and text of unlocked notes in the one Notes folder you choose, so it can show them in the notch. It changes a note only when you edit it in the notch, and sends nothing off your Mac.
+MacNotch lists the notes in the one Notes folder you choose and opens the one you click in Notes. It never changes your notes and sends nothing off your Mac.
 ```
-(Active voice, specific, one purpose, per `privacy.md › Requesting permission`. Accurate wrt. editing: writes happen only after the user types in the inline editor; "Create Folder" is an explicit click.)
+(Active voice, specific, one purpose, per `privacy.md › Requesting permission`. "Create Folder" is the only write and is an explicit click.)
 
 ## 10. Menu bar extra and Settings
 
@@ -359,12 +320,6 @@ Single pane, titled **"MacNotch Settings"** (`settings.md › Desktop (macOS)`: 
 │   Panel Width   360 ──────●──── 520        420 pt         │
 │   Panel Height  160 ──●──────── 240        180 pt         │
 │                                                           │
-│ Notes                                                     │
-│   Folder        [ MacNotch              ⌃ ]  (pop-up)     │
-│                 Other… → Folder Name [        ]           │
-│   ✓ Found · 12 unlocked notes, 2 locked hidden            │
-│   (or ⚠ No folder with this name in Notes)                │
-│                                                           │
 │ Pomodoro                                                  │
 │   Focus            [ 25 ] min   (1–90)                    │
 │   Short Break      [  5 ] min   (1–30)                    │
@@ -375,7 +330,7 @@ Single pane, titled **"MacNotch Settings"** (`settings.md › Desktop (macOS)`: 
 ```
 - "Show Timer Next to Notch While Running" is `@AppStorage("ui.showTimerWhileCollapsed")`, default off; the window agent reads the same key for the collapsed wings.
 - Launch at Login uses `SMAppService.mainApp`. Sound uses the system "Glass" sound and follows the system alert volume.
-- Folder is a pop-up button (`pop-up-buttons.md`) listing the folders found in Notes (unique names, no Recently Deleted), loaded when Settings opens, plus **Other…** which reveals a text field (500 ms debounce) for a folder that does not exist yet; when the folder is missing, **Create “Name” Folder** appears (explicit click). With no folder list available (Notes closed, no access) the text field is shown directly. The status line is a text status, not a color-only cue.
+- The Notes folder is not set here; it is chosen from the menu in the notch header (5.3).
 - Duration changes during a running phase apply to the next phase; do not alter the running one.
 - Not included on purpose: appearance/theme, hover delays, accent colors, auto-start (`settings.md › Best practices`: minimize settings; respect system settings).
 
@@ -385,7 +340,7 @@ Single pane, titled **"MacNotch Settings"** (`settings.md › Desktop (macOS)`: 
 - Do not animate anything at idle: no breathing glow, no looping ring, no shimmer.
 - Do not use `Timer` at sub-second intervals, `TimelineView(.animation)`, or `Canvas` redraw loops.
 - Do not poll Notes. Fetch on expand; cache 30 s.
-- Do not request Automation, Full Disk Access, notifications, or accessibility permissions at launch, and do not request Accessibility permission to catch global keys.
+- Do not request any permission at launch. MacNotch uses only Automation (Notes); never request Full Disk Access or Accessibility.
 - Do not read, show, or log the bodies of locked notes.
 - Do not auto-start the next Pomodoro phase or auto-dismiss the island on a timer while the user is reading.
 - Do not communicate phase by color alone, and do not use the user's macOS accent color for phase meaning.

@@ -10,6 +10,9 @@ final class NotchPanel: NSPanel {
     private var geometry: NotchGeometry
     private var cancellables = Set<AnyCancellable>()
     private var wantsKey = false
+    /// App that was frontmost when we took key by click; restored on drop if we activated MacNotch.
+    private var previousApp: NSRunningApplication?
+    private var didActivate = false
     /// Tiny panel over the collapsed/wings island: the only mouse-catching window while not expanded.
     private var sensor: HoverSensorPanel?
     private var spacePinned = false
@@ -75,7 +78,7 @@ final class NotchPanel: NSPanel {
             let r = self.hostView.interactiveViewRect(size: self.viewModel.expandedSizeForDebug).insetBy(dx: -slop, dy: -slop)
             return self.convertToScreen(self.hostView.convert(r, to: nil)).contains(NSEvent.mouseLocation)
         }
-        viewModel.onDropKey = { [weak self] in self?.dropKey() }
+        viewModel.onDropKey = { [weak self] restore in self?.dropKey(restoreFocus: restore) }
         hostView.refreshTracking()
         let sensor = HoverSensorPanel()
         sensor.onEnter = { [weak self] in MainActor.assumeIsolated { self?.viewModel.sensorEntered() } }
@@ -88,8 +91,6 @@ final class NotchPanel: NSPanel {
         }
         syncMouseMode()
         if CommandLine.arguments.contains("--debug-geometry") { debugDump(screen) }
-        if CommandLine.arguments.contains("--debug-lazy-test") { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.runLazyDebug() } } }
-        if CommandLine.arguments.contains("--debug-open-note") { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.runOpenNoteDebug() } } }
     }
 
     /// Never let AppKit push the panel below the menu bar: its top must equal screen.frame.maxY.
@@ -104,58 +105,37 @@ final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { wantsKey }
     override var canBecomeMain: Bool { false }
 
-    /// The editor asks for keyboard focus (user clicked into it, or opened a note). The panel is non-activating,
-    /// so becoming key does not activate the app or reorder other windows.
-    @MainActor func focusEditor(_ tv: NSTextView, reason: String) {
-        guard viewModel.isExpanded else { return }
+    /// Explicit click inside the expanded island: become key (never on hover). The panel is non-activating, so
+    /// we activate MacNotch so typing works, and remember the previous app to restore on drop.
+    @MainActor private func takeKey() {
+        guard viewModel.isExpanded, !isKeyWindow else { return }
+        previousApp = NSWorkspace.shared.frontmostApplication.flatMap {
+            $0.processIdentifier == getpid() || $0.bundleIdentifier == "com.apple.Notes" ? nil : $0
+        }
         wantsKey = true
-        activateForTyping()
-        if !isKeyWindow { makeKey() }
-        let ok = firstResponder === tv || makeFirstResponder(tv)
-        Log.notes.notice("focusEditor(\(reason, privacy: .public)) isKey=\(self.isKeyWindow) firstResponder=\(ok) editable=\(tv.isEditable) appActive=\(NSApp.isActive)")
+        // Keystrokes only reach a key non-activating panel when the app is active; hover never gets here.
+        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        didActivate = true
+        makeKey()
+        Log.hover.notice("takeKey (click) isKey=\(self.isKeyWindow) prev=\(self.previousApp?.localizedName ?? "-", privacy: .public)")
     }
 
-    /// A non-activating panel can be AppKit-key while WindowServer still routes keystrokes to the frontmost app
-    /// (log evidence: panel isKey=true, appActive=true, yet System Events reports another app frontmost).
-    /// Really activate MacNotch while editing and remember who to give focus back to.
-    private var previousApp: NSRunningApplication?
-    @MainActor private func activateForTyping() {
-        let me = ProcessInfo.processInfo.processIdentifier
-        // Never record Notes (we may have just activated it through `show`) or MacNotch itself as "previous".
-        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != me, front.bundleIdentifier != "com.apple.Notes" {
-            previousApp = front
-        } else if previousApp == nil || previousApp?.isTerminated == true {
-            previousApp = FocusTracker.lastExternal
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            Log.notes.notice("activateForTyping: active=\(NSApp.isActive) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?", privacy: .public) prev=\(self.previousApp?.localizedName ?? "-", privacy: .public)")
-        }
-    }
-
-    @MainActor private func restorePreviousApp() {
-        let prev = previousApp
-        previousApp = nil
-        guard let prev, !prev.isTerminated, NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else { return }
-        prev.activate(options: [])
-    }
-
-    /// The island is collapsing: end editing and release key status without activating anything else.
-    @MainActor private func dropKey() {
+    /// The island is collapsing: release key status; if MacNotch was activated, hand focus back.
+    @MainActor private func dropKey(restoreFocus: Bool) {
         let wasKey = isKeyWindow
+        Log.hover.notice("dropKey wasKey=\(wasKey) restore=\(restoreFocus)")
         wantsKey = false
         if firstResponder !== contentView { makeFirstResponder(nil) }
         if wasKey {
             orderOut(nil)
             orderFrontRegardless()
         }
-        NotesAX.log.notice("end: before restore front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?", privacy: .public) prev=\(self.previousApp?.localizedName ?? "-", privacy: .public)")
-        restorePreviousApp()
-        let after = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            NotesAX.log.notice("end: after restore front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?", privacy: .public) (immediately \(after, privacy: .public))")
+        let prev = previousApp
+        previousApp = nil
+        if didActivate {
+            didActivate = false
+            if restoreFocus, NSApp.isActive { prev?.activate(options: []) }
         }
-        Log.notes.notice("dropKey wasKey=\(wasKey) isKey=\(self.isKeyWindow)")
     }
 
     /// The big panel catches mouse events (even over transparent pixels) for its whole frame, which would block
@@ -226,6 +206,7 @@ final class NotchPanel: NSPanel {
                 MainActor.assumeIsolated { if viewModel.isSticky { viewModel.collapse() } }
             } else {
                 MainActor.assumeIsolated {
+                    takeKey()   // explicit click inside the island (never hover)
                     // Clicks never pin the panel: hovering out always dismisses it.
                     if viewModel.layout != .expanded { viewModel.expandNow() }
                 }
@@ -252,13 +233,9 @@ final class NotchPanel: NSPanel {
     }
 
     override func keyDown(with event: NSEvent) {
-        let textFocused = firstResponder is NSText
         let handled = MainActor.assumeIsolated {
-            viewModel.handleKey(keyCode: event.keyCode,
-                                command: event.modifierFlags.contains(.command),
-                                textFocused: textFocused)
+            viewModel.handleKey(keyCode: event.keyCode, command: event.modifierFlags.contains(.command))
         }
-        Log.notes.notice("panel.keyDown code=\(event.keyCode) textFocused=\(textFocused) handled=\(handled)")
         if !handled { super.keyDown(with: event) }
     }
 
@@ -266,87 +243,15 @@ final class NotchPanel: NSPanel {
         guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else {
             return super.performKeyEquivalent(with: event)
         }
-        let handled = MainActor.assumeIsolated {
-            viewModel.handleKey(keyCode: event.keyCode, command: true, textFocused: firstResponder is NSText)
-        }
+        let handled = MainActor.assumeIsolated { viewModel.handleKey(keyCode: event.keyCode, command: true) }
         return handled || super.performKeyEquivalent(with: event)
-    }
-
-    override func becomeKey() {
-        super.becomeKey()
-        Log.notes.notice("panel becomeKey")
     }
 
     override func resignKey() {
         super.resignKey()
-        // Something else took key (e.g. the user clicked another window): stop wanting it and save.
+        Log.hover.notice("resignKey")
+        // Something else took key (e.g. the user clicked another window): stop wanting it.
         wantsKey = false
-        // Do NOT re-activate the previous app here: if the user clicked another app, that app must keep focus.
-        MainActor.assumeIsolated { previousApp = nil }
-        Log.notes.notice("panel resignKey -> flush edits")
-        MainActor.assumeIsolated { viewModel.appState.notes.flushEditsOnCollapse() }
-    }
-
-    /// Debug harness (`--debug-open-note`): expand, open the first note, focus + type into it, log the state.
-    @MainActor func runOpenNoteDebug() {
-        let vm = viewModel
-        let notes = vm.appState.notes
-        func step(_ delay: Double, _ block: @escaping @MainActor () -> Void) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { block() } }
-        }
-        step(1.5) {
-            Log.notes.notice("debug-open-note: expanding; remembered=\(vm.rememberedNoteID ?? -1) status=\(String(describing: notes.status), privacy: .public) count=\(notes.notes.count)")
-            vm.expandNow()
-        }
-        step(4.5) {
-            if vm.selectedNote == nil, let n = notes.notes.first { Log.notes.notice("debug-open-note: opening \(n.title, privacy: .public)"); vm.openNote(n) }
-            else { Log.notes.notice("debug-open-note: selected already (restored)=\(vm.selectedNote?.id ?? -1)") }
-        }
-        step(8.0) { [weak self] in
-            guard let self else { return }
-            let tv = Self.findTextView(in: self.hostView)
-            Log.notes.notice("debug-open-note: textView=\(tv != nil) editable=\(tv?.isEditable ?? false) selectable=\(tv?.isSelectable ?? false) isKey=\(self.isKeyWindow) firstResponder=\(String(describing: self.firstResponder.map { type(of: $0) }), privacy: .public) mode=\(String(describing: notes.activeSession?.mode), privacy: .public) insertionColor=\(String(describing: tv?.insertionPointColor), privacy: .public)")
-            if let tv, tv.isEditable {
-                self.focusEditor(tv, reason: "debug")
-                tv.insertText("[debug typed] ", replacementRange: tv.selectedRange())
-                Log.notes.notice("debug-open-note: text now=\(tv.string.prefix(60), privacy: .public) firstResponderIsTV=\(self.firstResponder === tv) isKey=\(self.isKeyWindow)")
-            }
-        }
-    }
-
-    /// Debug harness (`--debug-lazy-test`): expand, open the first note, LOG the frontmost app at each step, then
-    /// type text and save through the lazy path and log again. Never prints note content.
-    @MainActor func runLazyDebug() {
-        let vm = viewModel
-        let notes = vm.appState.notes
-        func front() -> String { "front=\(NotesAX.name(of: NotesAX.frontPID())) nsworkspace=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")" }
-        func step(_ delay: Double, _ block: @escaping @MainActor () -> Void) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { block() } }
-        }
-        let log = NotesAX.log
-        step(1.5) { log.notice("lazy-test: before open \(front(), privacy: .public) notes=\(notes.notes.count)"); vm.expandNow() }
-        step(4.5) {
-            if vm.selectedNote == nil, let n = notes.notes.first { vm.openNote(n) }
-            log.notice("lazy-test: opened \(front(), privacy: .public)")
-        }
-        step(10.0) { log.notice("lazy-test: 5s after open \(front(), privacy: .public) mode=\(String(describing: notes.activeSession?.mode), privacy: .public)") }
-        if CommandLine.arguments.contains("--debug-lazy-save") {
-            step(11.0) {
-                guard let s = notes.activeSession else { log.notice("lazy-test: no session"); return }
-                log.notice("lazy-test: saving \(front(), privacy: .public)")
-                Task { @MainActor in
-                    let ok = await s.debugInsertAndSave(" LAZYTEST")
-                    log.notice("lazy-test: saved ok=\(ok) state=\(s.debugSaveState, privacy: .public) \(front(), privacy: .public)")
-                }
-            }
-        }
-        step(18.0) { log.notice("lazy-test: end \(front(), privacy: .public)") }
-    }
-
-    private static func findTextView(in v: NSView) -> IslandTextView? {
-        if let t = v as? IslandTextView { return t }
-        for s in v.subviews { if let t = findTextView(in: s) { return t } }
-        return nil
     }
 }
 

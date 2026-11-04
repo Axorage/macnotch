@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Inline expanded content: Notes (left) and Pomodoro (right), no tabs.
-/// Top band (notch height) holds pane titles in the wings beside the hardware notch;
+/// Top band (notch height) holds pane titles in the wings beside the hardware notch (Notes: icon + folder menu);
 /// the centre of the band stays empty. See docs/DESIGN.md section 2.4.
 ///
 /// `ExpandedView()` reads `NotchViewModel` from the environment; `ExpandedView(viewModel:)`
@@ -35,7 +35,7 @@ private struct ExpandedContent: View {
         VStack(spacing: 0) {
             // Band: [notes title | notch | phase title]
             HStack(spacing: 0) {
-                NotesBand(viewModel: viewModel, notes: appState.notes)
+                NotesBand(notes: appState.notes)
                     .frame(width: wingWidth)
                 Spacer(minLength: 0)
                 PomodoroBand(engine: appState.pomodoro)

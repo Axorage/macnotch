@@ -1,7 +1,6 @@
 import AppKit
 import Combine
 import Foundation
-@preconcurrency import UserNotifications
 
 /// Pomodoro state machine. No per-second ticking: a single one-shot Timer is
 /// scheduled at `endDate`; the UI renders the countdown via Text(timerInterval:).
@@ -89,8 +88,6 @@ final class PomodoroEngine: ObservableObject {
     private var restoring = true
     private static let prefix = "pomodoro."
 
-    private var canNotify: Bool { Bundle.main.bundleIdentifier != nil }
-
     // MARK: Init
 
     init(defaults: UserDefaults = .standard) {
@@ -143,7 +140,6 @@ final class PomodoroEngine: ObservableObject {
     func start() {
         if isPaused { resume(); return }
         guard isIdle else { return }
-        requestNotificationAuthorizationIfNeeded()
         begin(duration: duration(for: phase))
     }
 
@@ -268,38 +264,9 @@ final class PomodoroEngine: ObservableObject {
 
         if notify {
             if soundEnabled { NSSound(named: "Glass")?.play() }
-            postNotification(finished: finished, next: next)
         }
         if notify { onPhaseCompleted?(finished) }
         if allowAutoStart && autoStartNext { begin(duration: duration(for: next)) }
-    }
-
-    // MARK: Notifications
-
-    private func requestNotificationAuthorizationIfNeeded() {
-        guard canNotify else { return }
-        let center = UNUserNotificationCenter.current()
-        center.getNotificationSettings { @Sendable s in
-            if s.authorizationStatus == .notDetermined {
-                center.requestAuthorization(options: [.alert, .sound]) { @Sendable _, _ in }
-            }
-        }
-    }
-
-    private func postNotification(finished: PomodoroPhase, next: PomodoroPhase) {
-        guard canNotify else { return }
-        let center = UNUserNotificationCenter.current()
-        let body = finished == .work ? "Time for a \(next.title.lowercased())." : "Ready to focus?"
-        let title = "\(finished.title) complete"
-        // Runs on an arbitrary queue: captures only immutable values, touches no engine state.
-        center.getNotificationSettings { @Sendable s in
-            guard s.authorizationStatus == .authorized || s.authorizationStatus == .provisional else { return }
-            let c = UNMutableNotificationContent()
-            c.title = title
-            c.body = body
-            let req = UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil)
-            center.add(req)
-        }
     }
 
     // MARK: Persistence
