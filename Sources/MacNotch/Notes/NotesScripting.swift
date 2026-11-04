@@ -302,4 +302,56 @@ final class NotesScripting: @unchecked Sendable {
         end tell
         """
     }
+
+    // MARK: Accessibility-backed editing helpers
+
+    /// Selects the note in Notes' window WITHOUT activating Notes (the AX editor needs it on screen).
+    static func showInBackgroundScript(uri: String) -> String {
+        """
+        tell application "Notes"
+            set n to note id "\(escape(uri))"
+            if (password protected of n) is not false then return "!LOCKED"
+            show n
+            return "OK"
+        end tell
+        """
+    }
+
+    /// Id of the note Notes currently has selected ("" when none / unreadable).
+    static let selectedNoteIDScript = """
+        tell application "Notes"
+            try
+                return id of item 1 of (get selection)
+            on error
+                return ""
+            end try
+        end tell
+        """
+
+    /// Read-only state of a note (scripting never brings Notes forward): "!LOCKED" or
+    /// attachment count, modification seconds, plaintext (FS-separated, plaintext last).
+    static func lazyStateScript(uri: String) -> String {
+        """
+        tell application "Notes"
+            set n to note id "\(escape(uri))"
+            if (password protected of n) is not false then return "!LOCKED"
+            \(epochSnippet)
+            set fs to character id 31
+            \(secondsTextSnippet(of: "(modification date of n) - epoch", into: "mdText"))
+            return ((count of attachments of n) as text) & fs & mdText & fs & (plaintext of n)
+        end tell
+        """
+    }
+
+    /// Fields (FS-separated): LOCKED | attachment count, plaintext. Used to confirm an AX write reached the note model.
+    static func verifyScript(uri: String) -> String {
+        """
+        tell application "Notes"
+            set n to note id "\(escape(uri))"
+            if (password protected of n) is not false then return "!LOCKED"
+            set fs to character id 31
+            return ((count of attachments of n) as text) & fs & (plaintext of n)
+        end tell
+        """
+    }
 }

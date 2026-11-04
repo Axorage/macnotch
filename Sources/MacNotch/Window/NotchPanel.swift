@@ -88,6 +88,7 @@ final class NotchPanel: NSPanel {
         }
         syncMouseMode()
         if CommandLine.arguments.contains("--debug-geometry") { debugDump(screen) }
+        if CommandLine.arguments.contains("--debug-lazy-test") { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.runLazyDebug() } } }
         if CommandLine.arguments.contains("--debug-open-note") { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.runOpenNoteDebug() } } }
     }
 
@@ -120,7 +121,12 @@ final class NotchPanel: NSPanel {
     private var previousApp: NSRunningApplication?
     @MainActor private func activateForTyping() {
         let me = ProcessInfo.processInfo.processIdentifier
-        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != me { previousApp = front }
+        // Never record Notes (we may have just activated it through `show`) or MacNotch itself as "previous".
+        if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != me, front.bundleIdentifier != "com.apple.Notes" {
+            previousApp = front
+        } else if previousApp == nil || previousApp?.isTerminated == true {
+            previousApp = FocusTracker.lastExternal
+        }
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             Log.notes.notice("activateForTyping: active=\(NSApp.isActive) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?", privacy: .public) prev=\(self.previousApp?.localizedName ?? "-", privacy: .public)")
@@ -143,7 +149,12 @@ final class NotchPanel: NSPanel {
             orderOut(nil)
             orderFrontRegardless()
         }
+        NotesAX.log.notice("end: before restore front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?", privacy: .public) prev=\(self.previousApp?.localizedName ?? "-", privacy: .public)")
         restorePreviousApp()
+        let after = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NotesAX.log.notice("end: after restore front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?", privacy: .public) (immediately \(after, privacy: .public))")
+        }
         Log.notes.notice("dropKey wasKey=\(wasKey) isKey=\(self.isKeyWindow)")
     }
 
@@ -270,7 +281,8 @@ final class NotchPanel: NSPanel {
         super.resignKey()
         // Something else took key (e.g. the user clicked another window): stop wanting it and save.
         wantsKey = false
-        MainActor.assumeIsolated { restorePreviousApp() }
+        // Do NOT re-activate the previous app here: if the user clicked another app, that app must keep focus.
+        MainActor.assumeIsolated { previousApp = nil }
         Log.notes.notice("panel resignKey -> flush edits")
         MainActor.assumeIsolated { viewModel.appState.notes.flushEditsOnCollapse() }
     }
@@ -300,6 +312,35 @@ final class NotchPanel: NSPanel {
                 Log.notes.notice("debug-open-note: text now=\(tv.string.prefix(60), privacy: .public) firstResponderIsTV=\(self.firstResponder === tv) isKey=\(self.isKeyWindow)")
             }
         }
+    }
+
+    /// Debug harness (`--debug-lazy-test`): expand, open the first note, LOG the frontmost app at each step, then
+    /// type text and save through the lazy path and log again. Never prints note content.
+    @MainActor func runLazyDebug() {
+        let vm = viewModel
+        let notes = vm.appState.notes
+        func front() -> String { "front=\(NotesAX.name(of: NotesAX.frontPID())) nsworkspace=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")" }
+        func step(_ delay: Double, _ block: @escaping @MainActor () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { block() } }
+        }
+        let log = NotesAX.log
+        step(1.5) { log.notice("lazy-test: before open \(front(), privacy: .public) notes=\(notes.notes.count)"); vm.expandNow() }
+        step(4.5) {
+            if vm.selectedNote == nil, let n = notes.notes.first { vm.openNote(n) }
+            log.notice("lazy-test: opened \(front(), privacy: .public)")
+        }
+        step(10.0) { log.notice("lazy-test: 5s after open \(front(), privacy: .public) mode=\(String(describing: notes.activeSession?.mode), privacy: .public)") }
+        if CommandLine.arguments.contains("--debug-lazy-save") {
+            step(11.0) {
+                guard let s = notes.activeSession else { log.notice("lazy-test: no session"); return }
+                log.notice("lazy-test: saving \(front(), privacy: .public)")
+                Task { @MainActor in
+                    let ok = await s.debugInsertAndSave(" LAZYTEST")
+                    log.notice("lazy-test: saved ok=\(ok) state=\(s.debugSaveState, privacy: .public) \(front(), privacy: .public)")
+                }
+            }
+        }
+        step(18.0) { log.notice("lazy-test: end \(front(), privacy: .public)") }
     }
 
     private static func findTextView(in v: NSView) -> IslandTextView? {

@@ -5,9 +5,22 @@ import os
 
 // MARK: Provider: reading / writing a single note for the inline editor
 
+/// Carries a non-Sendable result (NSAttributedString) out of a detached task that is the only user of it.
+struct Boxed<T>: @unchecked Sendable { let value: T }
+
 enum EditProbe {
     case editable(NSAttributedString, mod: Int, html: String, plain: String)
-    case rich(display: String?), tooLong, locked, unavailable
+    /// Not provably lossless through HTML (attachments, tables, checklists, ...): edit via Accessibility instead.
+    case unsafe(UnsafeNote)
+    case tooLong, locked, unavailable
+}
+
+struct UnsafeNote {
+    var display: String?
+    var html: String
+    var plain: String
+    var attachments: Int
+    var mod: Int = 0
 }
 
 enum SaveOutcome {
@@ -27,16 +40,31 @@ extension NotesProvider {
         let f = out.components(separatedBy: NotesScripting.fieldSep)
         guard f.count >= 4, let attachments = Int(f[0]), let mod = Int(f[1]) else { return .unavailable }
         let html = f[3...].joined(separator: NotesScripting.fieldSep)
-        if attachments > 0 {
-            Log.notes.notice("read-only: \(attachments) attachment(s)")
-            return .rich(display: nil)
+        // Parsing a note with big images / long text must not block the main thread.
+        let plain = f[2]
+        let d = await Task.detached(priority: .userInitiated) {
+            Boxed(value: Self.decide(attachments: attachments, mod: mod, html: html, plain: plain))
+        }.value.value
+        if case .unsafe = d.probe { Log.notes.notice("not HTML-safe: \(d.code, privacy: .public)") }
+        return d.probe
+    }
+
+    /// The editability decision, a pure function of what the probe script read (also used by `--debug-probe-all`).
+    /// Only the VISIBLE text length is limited: the HTML body also carries base64 image data and markup, so its
+    /// length says nothing about how big the note is to edit.
+    nonisolated static func decide(attachments: Int, mod: Int, html: String, plain: String, legacyLimit: Bool = false) -> (probe: EditProbe, code: String) {
+        func unsafe(_ code: String) -> (EditProbe, String) {
+            (.unsafe(UnsafeNote(display: NoteHTML.readOnlyDisplay(html: html), html: html, plain: plain, attachments: attachments, mod: mod)), code)
         }
-        if html.count > NoteHTML.maxEditableLength { return .tooLong }
-        guard let doc = NoteHTML.makeEditable(html: html, plaintext: f[2]) else {
-            Log.notes.notice("read-only: \(NoteHTML.lastFailure, privacy: .public)")
-            return .rich(display: NoteHTML.readOnlyDisplay(html: html))
+        if legacyLimit, html.count > 60_000 { return (.tooLong, "legacy-html-over-60k") }
+        let plainLength = plain.utf16.count
+        if plainLength > NoteHTML.maxNotesBackedLength { return (.tooLong, "plaintext-over-\(NoteHTML.maxNotesBackedLength)") }
+        if attachments > 0 { return unsafe("attachments") }
+        if plainLength > NoteHTML.maxEditableLength { return unsafe("plaintext-over-html-limit") }
+        guard let doc = NoteHTML.makeEditable(html: html, plaintext: plain) else {
+            return unsafe("html-codec: " + NoteHTML.lastFailure)
         }
-        return .editable(doc, mod: mod, html: html, plain: f[2])
+        return (.editable(doc, mod: mod, html: html, plain: plain), "html")
     }
 
     func currentModification(of note: NoteItem) async -> Int? {
@@ -162,7 +190,7 @@ enum NotesLineJump {
         return got.location == offset
     }
 
-    private static func element(_ e: AXUIElement, _ attr: String) -> AXUIElement? {
+    static func element(_ e: AXUIElement, _ attr: String) -> AXUIElement? {
         var v: CFTypeRef?
         guard AXUIElementCopyAttributeValue(e, attr as CFString, &v) == .success, let v,
               CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
@@ -170,7 +198,7 @@ enum NotesLineJump {
     }
 
     /// Breadth-first search for the note body (AXTextArea), capped in depth and node count.
-    private static func findTextArea(in root: AXUIElement) -> AXUIElement? {
+    static func findTextArea(in root: AXUIElement) -> AXUIElement? {
         var level = [root]
         var visited = 0
         for _ in 0..<10 {
@@ -200,10 +228,13 @@ final class NoteEditSession: ObservableObject {
         case loading, editable, unavailable
         case readOnly(ReadOnlyReason)
     }
-    enum ReadOnlyReason: Equatable { case rich, tooLong, locked }
+    enum ReadOnlyReason: Equatable { case rich, needsAccessibility, axUnavailable, tooLong, locked }
+    /// How saves reach the note: whole-body HTML (provably lossless notes) or text diffs applied in Notes via Accessibility.
+    enum Backing: Equatable { case html, accessibility }
     enum SaveState: Equatable { case idle, saving, saved, failed(String), conflict }
 
     @Published private(set) var mode: Mode = .loading
+    @Published private(set) var backing: Backing = .html
     @Published private(set) var saveState: SaveState = .idle
     @Published private(set) var liveTitle: String
     /// Bumped when the editor text must be replaced from outside (initial load, Reload).
@@ -225,6 +256,15 @@ final class NoteEditSession: ObservableObject {
     private(set) var readOnlyDisplay: String?
 
     private var preEditPlain = ""
+    // Accessibility-backed state
+    /// Notes' AX text as we last left it (after loading or our last successful write); the diff base and conflict check.
+    private var axBaseline = ""
+    /// Notes' plaintext as AppleScript last reported it (our load or our last write): the conflict check compares to it.
+    private var axNotesPlain = ""
+    private var axOriginal = ""
+    private var axOriginalAttributed = NSAttributedString()
+    private var axAttachments = 0
+    private var grantWatch: Task<Void, Never>?
     private var baseMod = 0
     private var remoteMod = 0
     private var dirty = false
@@ -233,6 +273,9 @@ final class NoteEditSession: ObservableObject {
     private var fade: Task<Void, Never>?
 
     static let autosaveDelay: UInt64 = 1_500_000_000
+    /// Each Accessibility save touches Notes' own UI, so it waits longer and coalesces more.
+    static let axAutosaveDelay: UInt64 = 3_000_000_000
+    private var saveDelay: UInt64 { backing == .accessibility ? Self.axAutosaveDelay : Self.autosaveDelay }
 
     init(note: NoteItem, notes: NotesProvider) {
         self.note = note
@@ -241,6 +284,15 @@ final class NoteEditSession: ObservableObject {
     }
 
     var hasUnsavedChanges: Bool { dirty || saving }
+
+    /// Debug harness hook: the editor content as a save would write it.
+    func debugInsertAndSave(_ extra: String) async -> Bool {
+        let m = NSMutableAttributedString(attributedString: current)
+        m.append(NSAttributedString(string: extra, attributes: NoteHTML.baseAttributes))
+        contentChanged(m)
+        return await saveNow()
+    }
+    var debugSaveState: String { String(describing: saveState) }
 
     func load() async {
         notes.activeSession = self
@@ -254,16 +306,59 @@ final class NoteEditSession: ObservableObject {
         }
         switch probe {
         case .editable(let d, let mod, let html, let plain):
+            backing = .html
             baseMod = mod; preEditHTML = html; preEditPlain = plain
             attributed = d; current = d
             text = d.string; dirty = false; saveState = .idle; hasEdited = false
             liveTitle = NoteHTML.title(of: d) ?? note.title
             reloadToken += 1
             mode = .editable
-        case .rich(let display): readOnlyDisplay = display; mode = .readOnly(.rich)
+        case .unsafe(let u): await loadViaNotes(u)
         case .tooLong: mode = .readOnly(.tooLong)
         case .locked: mode = .readOnly(.locked)
         case .unavailable: mode = .unavailable
+        }
+    }
+
+    // MARK: Accessibility-backed editing
+
+    private func displayTitle(_ a: NSAttributedString) -> String {
+        let t = (NoteHTML.title(of: a) ?? "").replacingOccurrences(of: "\u{FFFC}", with: "")
+        return t.isEmpty ? note.title : t
+    }
+
+    /// Notes whose HTML can't be saved losslessly: edit the text inside Notes itself through Accessibility.
+    private func loadViaNotes(_ u: UnsafeNote) async {
+        readOnlyDisplay = u.display
+        guard AXIsProcessTrusted() else { mode = .readOnly(.needsAccessibility); return }
+        guard notes.uri(for: note) != nil else { mode = .unavailable; return }
+        // Lazy: opening a note never touches Notes' UI. The baseline is what scripting already read (plaintext, whose
+        // attachments are U+FFFC) and the modification date; Notes is only shown when a save needs it.
+        NotesAX.log.notice("lazy: open (no Notes contact)")
+        let baseline = u.plain
+        let a = NoteAXDisplay.attributed(baseline: baseline, html: u.html)
+        backing = .accessibility
+        axBaseline = baseline; axNotesPlain = baseline; axOriginal = baseline; axOriginalAttributed = a; axAttachments = u.attachments
+        baseMod = u.mod
+        preEditHTML = u.html
+        attributed = a; current = a; text = a.string
+        dirty = false; saveState = .idle; hasEdited = false
+        liveTitle = displayTitle(a)
+        reloadToken += 1
+        mode = .editable
+        Log.notes.notice("ax-edit: ready (\(baseline.utf16.count) UTF-16, \(NotesTextDiff.placeholderCount(baseline)) attachment(s))")
+    }
+
+    /// "Allow Accessibility to Edit": shows the system prompt, then opens the note for editing once it is granted.
+    func requestAccessibilityAndWait() {
+        NotesProvider.requestAccessibility()
+        grantWatch?.cancel()
+        grantWatch = Task { [weak self] in
+            for _ in 0..<120 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { return }
+                if AXIsProcessTrusted() { await self?.load(); return }
+            }
         }
     }
 
@@ -276,7 +371,7 @@ final class NoteEditSession: ObservableObject {
         text = new.string
         dirty = true
         hasEdited = true
-        liveTitle = NoteHTML.title(of: new) ?? note.title
+        liveTitle = displayTitle(new)
         if saveState == .saved || saveState == .saving { saveState = .idle }
         if saveState == .conflict { return }
         scheduleAutosave()
@@ -285,7 +380,7 @@ final class NoteEditSession: ObservableObject {
     private func scheduleAutosave() {
         debounce?.cancel()
         debounce = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.autosaveDelay)
+            try? await Task.sleep(nanoseconds: self?.saveDelay ?? Self.autosaveDelay)
             guard !Task.isCancelled else { return }
             _ = await self?.saveNow()
         }
@@ -303,8 +398,12 @@ final class NoteEditSession: ObservableObject {
         saveState = .saving
         fade?.cancel()
         let snapshot = current
-        let html = NoteHTML.serialize(snapshot)
-        let outcome = await notes.save(note, expectedMod: baseMod, html: html)
+        let outcome: SaveOutcome
+        if backing == .accessibility {
+            outcome = await writeViaNotes(target: snapshot.string)
+        } else {
+            outcome = await notes.save(note, expectedMod: baseMod, html: NoteHTML.serialize(snapshot))
+        }
         saving = false
         apply(outcome, snapshot: snapshot)
         return !dirty
@@ -314,6 +413,7 @@ final class NoteEditSession: ObservableObject {
         switch outcome {
         case .saved(let mod):
             baseMod = mod
+            if backing == .accessibility { axBaseline = snapshot.string }
             if current === snapshot { dirty = false } else { scheduleAutosave() }
             saveState = .saved
             fade = Task { [weak self] in
@@ -328,6 +428,22 @@ final class NoteEditSession: ObservableObject {
         case .locked: mode = .readOnly(.locked); saveState = .idle
         case .rich: mode = .readOnly(.rich); saveState = .idle
         case .failed(let m): saveState = .failed(m)
+        }
+    }
+
+    /// Applies `target` to the note in Notes through Accessibility (diff against what Notes held after our last write).
+    private func writeViaNotes(target: String) async -> SaveOutcome {
+        guard let uri = notes.uri(for: note) else { return .failed("Couldn\u{2019}t find this note.") }
+        let (base, att, bp, bm) = (axBaseline, axAttachments, axNotesPlain, baseMod)
+        let out = await NotesAX.run { NotesAX.write(uri: uri, basePlain: bp, baseMod: bm, baseline: base, target: target, attachments: att) }
+        if out.refocus { NotesAX.refocusPanel() }
+        switch out.result {
+        case .saved:
+            if let p = out.newPlain { axNotesPlain = p }
+            if let m = out.newMod { baseMod = m }
+            return .saved(mod: baseMod)
+        case .conflict: return .conflict(currentMod: baseMod &+ 1)
+        case .failed(let m): return .failed(m)
         }
     }
 
@@ -352,6 +468,22 @@ final class NoteEditSession: ObservableObject {
 
     /// "Keep Editing": keep local text and accept overwriting the newer version in Notes on the next save.
     func keepEditing() {
+        if backing == .accessibility {
+            // Re-base on what Notes holds now; the next save then overwrites the newer text with ours.
+            guard let uri = notes.uri(for: note) else { return }
+            saveState = .saving
+            Task {
+                let r = await NotesAX.run { NotesAX.readState(uri: uri) }
+                if case .ok(let st) = r {
+                    axBaseline = st.plain; axNotesPlain = st.plain; baseMod = st.mod; axAttachments = st.attachments
+                    saveState = .idle
+                    if dirty { scheduleAutosave() }
+                } else {
+                    saveState = .failed(NotesAX.failMessage)
+                }
+            }
+            return
+        }
         baseMod = remoteMod
         saveState = .idle
         if dirty { scheduleAutosave() }
@@ -361,7 +493,7 @@ final class NoteEditSession: ObservableObject {
 
     /// Writes the body as it was when editing began (with the same conflict check as any save).
     func revertToOriginal() {
-        guard mode == .editable, !preEditHTML.isEmpty else { return }
+        guard mode == .editable, backing == .accessibility || !preEditHTML.isEmpty else { return }
         Task { await performRevert() }
     }
 
@@ -372,12 +504,20 @@ final class NoteEditSession: ObservableObject {
         saving = true
         saveState = .saving
         fade?.cancel()
-        let outcome = await notes.save(note, expectedMod: baseMod, html: preEditHTML)
+        let ax = backing == .accessibility
+        // Accessibility mode: the inverse diff (what Notes holds now -> the text it had when editing began).
+        let outcome = ax ? await writeViaNotes(target: axOriginal)
+                         : await notes.save(note, expectedMod: baseMod, html: preEditHTML)
         saving = false
         switch outcome {
         case .saved(let mod):
             baseMod = mod
-            if let a = NoteHTML.makeEditable(html: preEditHTML, plaintext: preEditPlain) {
+            if ax {
+                axBaseline = axOriginal
+                attributed = axOriginalAttributed; current = attributed; text = attributed.string
+                liveTitle = displayTitle(attributed)
+                reloadToken += 1
+            } else if let a = NoteHTML.makeEditable(html: preEditHTML, plaintext: preEditPlain) {
                 attributed = a; current = a; text = a.string
                 liveTitle = NoteHTML.title(of: a) ?? note.title
                 reloadToken += 1
@@ -400,18 +540,21 @@ final class NoteEditSession: ObservableObject {
     /// Unsaved text to keep when the detail goes away without a successful save.
     func draft() -> NoteDraft? {
         guard mode == .editable, dirty else { return nil }
-        return NoteDraft(text: text, attributed: current, conflict: saveState == .conflict, caret: selection.location)
+        return NoteDraft(text: text, attributed: current, conflict: saveState == .conflict, caret: selection.location,
+                         axBase: backing == .accessibility ? axBaseline : nil)
     }
 
     /// Re-apply text that could not be saved last time. A conflict stays a conflict: the user chooses.
     func restore(draft d: NoteDraft) {
-        guard mode == .editable else { return }
+        guard mode == .editable, (d.axBase != nil) == (backing == .accessibility) else { return }
         text = d.text
         attributed = d.attributed; current = d.attributed
         dirty = true; hasEdited = true
-        liveTitle = NoteHTML.title(of: d.attributed) ?? note.title
+        liveTitle = displayTitle(d.attributed)
         reloadToken += 1
-        if d.conflict { remoteMod = baseMod &+ 1; saveState = .conflict } else { scheduleAutosave() }
+        // A draft based on older Notes text is a conflict: the user decides whether to overwrite.
+        let stale = d.axBase.map { !$0.utf16.elementsEqual(axBaseline.utf16) } ?? false
+        if d.conflict || stale { remoteMod = baseMod &+ 1; saveState = .conflict } else { scheduleAutosave() }
         Log.notes.notice("draft restored conflict=\(d.conflict)")
     }
 
@@ -438,6 +581,12 @@ final class NoteEditSession: ObservableObject {
     /// Called while the app terminates: no async, so write synchronously.
     func flushSynchronously() {
         guard mode == .editable, dirty, !saving, saveState != .conflict else { return }
+        if backing == .accessibility {
+            let out = NotesAX.write(uri: notes.uri(for: note) ?? "", basePlain: axNotesPlain, baseMod: baseMod, baseline: axBaseline,
+                                    target: current.string, attachments: axAttachments)
+            if out.result == .saved { axBaseline = current.string; dirty = false }
+            return
+        }
         let html = NoteHTML.serialize(current)
         if case .saved(let mod) = notes.saveBlocking(note, expectedMod: baseMod, html: html) {
             baseMod = mod; dirty = false

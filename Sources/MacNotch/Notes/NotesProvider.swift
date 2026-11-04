@@ -39,7 +39,10 @@ final class NotesProvider: ObservableObject {
     private var fdaGranted = false
     /// Set by NotchViewModel; while false, store changes only mark the list dirty.
     var isViewing = false {
-        didSet { if !isViewing && oldValue { flushEditsOnCollapse() } }
+        didSet {
+            NotesAX.notchOpen = isViewing
+            if !isViewing && oldValue { flushEditsOnCollapse() }
+        }
     }
 
     /// Folder names for the picker (loaded lazily by `loadFolders()`, cached).
@@ -382,6 +385,7 @@ final class NotesProvider: ObservableObject {
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.activates = false
         cfg.hides = true
+        cfg.addsToRecentItems = false
         _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: cfg)
         for _ in 0..<20 where !notesIsRunning { try? await Task.sleep(nanoseconds: 200_000_000) }
     }

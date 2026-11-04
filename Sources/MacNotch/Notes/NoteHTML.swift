@@ -64,22 +64,26 @@ enum NoteHTML {
     private static func note(_ why: String) { lock.lock(); _failure = why; lock.unlock() }
     private static func bad<T>(_ why: String) -> T? { note(why); return nil }
 
-    /// Notes longer than this are read-only in the notch (a single Apple Event stays small and fast).
-    static let maxEditableLength = 60_000
+    /// Visible-text limit (UTF-16 units) for the HTML editor, which rewrites the whole body on every save.
+    static let maxEditableLength = 100_000
+    /// Visible-text limit for Notes-backed (Accessibility) editing, which only sends minimal text diffs.
+    static let maxNotesBackedLength = 200_000
+    /// Safety net for the HTML parser: markup (without images) beyond this is not parsed.
+    static let maxHTMLParseLength = 2_000_000
 
     static let textColor = NSColor.white
     static let dimColor = NSColor.white.withAlphaComponent(0.55)
-    static let bodySize: CGFloat = 13
+    static let bodySize: CGFloat = Typo.noteBodySize
 
     // MARK: Display attributes
 
     static func font(for s: NoteStyle) -> NSFont {
         let base: NSFont
         if s.heading > 0 {
-            let size: CGFloat = s.heading == 1 ? 20 : 17
+            let size: CGFloat = s.heading == 1 ? Typo.noteH1Size : Typo.noteH2Size
             base = s.mono ? .monospacedSystemFont(ofSize: size, weight: .semibold) : .systemFont(ofSize: size, weight: .semibold)
         } else if s.mono {
-            base = .monospacedSystemFont(ofSize: bodySize, weight: s.bold ? .bold : .regular)
+            base = .monospacedSystemFont(ofSize: Typo.noteMonoSize, weight: s.bold ? .bold : .regular)
         } else {
             base = .systemFont(ofSize: bodySize, weight: s.bold ? .bold : .regular)
         }
@@ -92,7 +96,7 @@ enum NoteHTML {
 
     static func paragraphStyle(list: Bool) -> NSParagraphStyle {
         let p = NSMutableParagraphStyle()
-        p.lineSpacing = 2
+        p.lineSpacing = Typo.noteLineSpacing
         if list {
             p.headIndent = listIndent
             p.firstLineHeadIndent = 0
@@ -749,7 +753,7 @@ enum NoteHTML {
     /// The editable attributed text for a note, or nil when editing would not be provably lossless.
     /// `NoteHTML.lastFailure` names the check that failed.
     static func makeEditable(html: String, plaintext: String) -> NSAttributedString? {
-        guard html.count <= maxEditableLength else { return bad("allowlist: html too long") }
+        guard html.utf16.count <= maxHTMLParseLength else { return bad("allowlist: html too large to parse") }
         guard let paras = parseParagraphs(html) else { return nil }
         let a = attributed(from: paras)
         guard plaintextMatches(plainText(a), plaintext) else {
@@ -776,9 +780,18 @@ enum NoteHTML {
         return "ours=[\(sk(ours))] notes=[\(sk(theirs))]"
     }
 
+    /// Replaces every embedded object / image (whose base64 payload can be megabytes) with one U+FFFC.
+    static func stripImages(_ html: String) -> String {
+        guard html.range(of: "<img", options: .caseInsensitive) != nil || html.range(of: "<object", options: .caseInsensitive) != nil else { return html }
+        return html
+            .replacingOccurrences(of: "(?s)<object\\b.*?</object>", with: "\u{FFFC}", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: "<img\\b[^>]*>", with: "\u{FFFC}", options: [.regularExpression, .caseInsensitive])
+    }
+
     /// Best-effort text with list markers for the read-only view; nil when the HTML is not understood at all.
     static func readOnlyDisplay(html: String) -> String? {
-        guard html.count <= maxEditableLength, let paras = parseParagraphs(html) else { return nil }
+        let h = stripImages(html)
+        guard h.utf16.count <= maxHTMLParseLength, let paras = parseParagraphs(h) else { return nil }
         return attributed(from: paras).string
     }
 

@@ -365,7 +365,10 @@ private struct NoteDetail: View {
         } else if case .failed(let message) = session.saveState {
             InlineNotice(symbol: "exclamationmark.triangle.fill", text: "\(message) Your changes are still here.",
                          actions: [("Try Again", { session.retry() })])
-        } else if axHint {
+        } else if session.mode == .readOnly(.needsAccessibility) {
+            InlineNotice(symbol: "hand.raised", text: "Editing this note needs Accessibility",
+                         actions: [("Allow Accessibility to Edit", { session.requestAccessibilityAndWait() })])
+        } else if axHint, session.mode != .readOnly(.needsAccessibility) {
             InlineNotice(symbol: "hand.raised", text: "Allow Accessibility to jump to the line",
                          actions: [("Open Settings", { NotesProvider.requestAccessibility(); axHint = false }),
                                    ("Not Now", {
@@ -381,6 +384,11 @@ private struct NoteDetail: View {
                 _ = viewModel.handleKey(keyCode: 53, command: false, textFocused: true)
             }, autoFocus: viewModel.focusEditorOnOpen, initialCaret: viewModel.rememberedCaret[note.id] ?? 0)
             .accessibilityHint("Edit the note. Changes save automatically.")
+            if session.backing == .accessibility {
+                Text("Text edits only \u{2014} formatting and images are preserved in Notes.")
+                    .font(Typo.meta).foregroundStyle(palette.textTertiary)
+                    .padding(.horizontal, Space.s)
+            }
         case .readOnly(let reason):
             VStack(alignment: .leading, spacing: Space.xs) {
                 readOnlyText
@@ -394,8 +402,10 @@ private struct NoteDetail: View {
 
     private static func caption(_ r: NoteEditSession.ReadOnlyReason) -> String {
         switch r {
-        case .rich: return "This note has formatting MacNotch can\u{2019}t edit yet \u{2014} edit it in Notes."
-        case .tooLong: return "This note is too long to edit here \u{2014} edit it in Notes."
+        case .rich: return "This note changed in a way MacNotch can\u{2019}t save safely \u{2014} edit it in Notes."
+        case .needsAccessibility: return "This note is edited through Notes itself so its images and formatting stay intact. That needs Accessibility access."
+        case .axUnavailable: return "MacNotch couldn\u{2019}t reach this note in Notes just now \u{2014} reopen it, or edit it in Notes."
+        case .tooLong: return "This note is over 200,000 characters \u{2014} edit it in Notes."
         case .locked: return "This note is locked \u{2014} edit it in Notes."
         }
     }
@@ -406,7 +416,7 @@ private struct NoteDetail: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: Space.s) {
                 Text(truncated ? String(full.prefix(Self.limit)) : full)
-                    .font(Typo.snippet).lineSpacing(2)
+                    .font(Typo.noteBody).lineSpacing(Typo.noteLineSpacing)
                     .foregroundStyle(palette.textPrimary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)

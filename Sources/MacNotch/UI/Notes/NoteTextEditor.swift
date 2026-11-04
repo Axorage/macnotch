@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// Rich-text editor for a note body: white on black, system font 13, undo enabled. Formatting is limited to what
+/// Rich-text editor for a note body: white on black, system font 12, undo enabled. Formatting is limited to what
 /// Notes HTML can carry (bold, italic, underline, strikethrough, links, headings, monospace, bullet / numbered lists).
 /// Lighter than TextEditor and exposes the selection (used to find the line for "Edit in Notes").
 struct NoteTextEditor: NSViewRepresentable {
@@ -70,6 +70,7 @@ struct NoteTextEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let tv = context.coordinator.textView else { return }
         tv.onEscape = onEscape
+        tv.textOnly = session.backing == .accessibility
         if context.coordinator.token != session.reloadToken {
             context.coordinator.replaceText(session.attributed, token: session.reloadToken)
         }
@@ -99,6 +100,17 @@ struct NoteTextEditor: NSViewRepresentable {
         }
 
         func textView(_ tv: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+            // Accessibility-backed notes: attachments (U+FFFC chips) are Notes' own, never touched from here.
+            if session.backing == .accessibility {
+                let ns = tv.string as NSString
+                let end = min(NSMaxRange(range), ns.length)
+                let hitsChip = range.location < end
+                    && ns.range(of: NoteAXDisplay.placeholder, options: [], range: NSRange(location: range.location, length: end - range.location)).location != NSNotFound
+                if hitsChip || (replacementString?.contains(NoteAXDisplay.placeholder) ?? false) {
+                    NSSound.beep()
+                    return false
+                }
+            }
             if let r = replacementString, !(tv as? IslandTextView)!.internalEdit {
                 pendingInsert = NSRange(location: range.location, length: (r as NSString).length)
             } else { pendingInsert = nil }
@@ -155,6 +167,8 @@ struct NoteTextEditor: NSViewRepresentable {
 final class IslandTextView: NSTextView {
     var onEscape: () -> Void = {}
     var wantsAutoFocus = false
+    /// Notes-backed editing: text only. Formatting shortcuts do nothing (formatting is preserved in Notes).
+    var textOnly = false
     /// True while this view inserts list markers itself (so the coordinator keeps their marker attribute).
     var internalEdit = false
     private var didAutoFocus = false
@@ -206,21 +220,25 @@ final class IslandTextView: NSTextView {
             case "v": paste(self); return true
             case "a": selectAll(self); return true
             case "z": undoManager?.undo(); return true
-            case "b": toggleFormat(.bold); return true
-            case "i": toggleFormat(.italic); return true
-            case "u": toggleFormat(.underline); return true
+            case "b": formatOrRefuse(.bold); return true
+            case "i": formatOrRefuse(.italic); return true
+            case "u": formatOrRefuse(.underline); return true
             default: return false
             }
         }
         switch key {
         case "z": undoManager?.redo(); return true
-        case "x": toggleFormat(.strike); return true
+        case "x": formatOrRefuse(.strike); return true
         case "v": pasteAsPlainText(self); return true
         default: return false
         }
     }
 
     // MARK: Formatting
+
+    private func formatOrRefuse(_ f: NoteHTML.Format) {
+        if textOnly { NSSound.beep() } else { toggleFormat(f) }
+    }
 
     func toggleFormat(_ f: NoteHTML.Format) {
         guard let storage = textStorage else { return }
@@ -251,6 +269,7 @@ final class IslandTextView: NSTextView {
     // MARK: Paste (keeps bold / italic / underline / strike / monospace / links only)
 
     override func paste(_ sender: Any?) {
+        if textOnly { pasteAsPlainText(sender); return }
         let pb = NSPasteboard.general
         var rich: NSAttributedString?
         if let d = pb.data(forType: .rtf) {

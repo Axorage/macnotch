@@ -15,7 +15,11 @@ enum Log {
 }
 
 /// Unsaved text kept in memory when the island collapses before a save succeeded (conflict / failure).
-struct NoteDraft { var text: String; var attributed: NSAttributedString; var conflict: Bool; var caret: Int }
+struct NoteDraft {
+    var text: String; var attributed: NSAttributedString; var conflict: Bool; var caret: Int
+    /// Set for drafts of Accessibility-backed notes: the Notes text the draft was based on.
+    var axBase: String?
+}
 
 @MainActor
 final class NotchViewModel: ObservableObject {

@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         DebugSettings.installMonitors()
+        FocusTracker.start()
         appState.openSettings = { [weak self] in self?.openSettings() }
         setupStatusItem()
         panel = NotchPanel(appState: appState)
@@ -47,6 +48,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NotesProvider.requestAccessibility()
         }
 
+        if CommandLine.arguments.contains("--debug-ax") {
+            Logger(subsystem: "com.eortizd.macnotch", category: "ax").notice("debug-ax trusted=\(AXIsProcessTrusted())")
+        }
+        if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--debug-ax-edit=") }) {
+            NotesAX.debugEdit(uri: String(arg.dropFirst("--debug-ax-edit=".count)))
+        }
+        if CommandLine.arguments.contains("--debug-probe-all") {
+            Task { await NotesDebug.probeAll(legacy: CommandLine.arguments.contains("--debug-probe-legacy")) }
+        }
+        if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--debug-ax-begin=") }) {
+            Task { await NotesDebug.axBegin(arg: String(arg.dropFirst("--debug-ax-begin=".count))) }
+        }
         if CommandLine.arguments.contains("--debug-fda") {
             let log = Logger(subsystem: "com.eortizd.macnotch", category: "fda")
             for r in NotesDatabase.fdaProbes() {
